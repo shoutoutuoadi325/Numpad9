@@ -37,6 +37,7 @@ function Invoke-DisposableLanguageSetup([string]$Mode) {
     $languageScript = @'
 param([string]$Mode, [string]$SnapshotPath, [string]$OwnTip)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Import-Module International
 function Restore-List([object[]]$Records) {
     if (-not $Records.Count) { throw 'Original language list was empty.' }
@@ -73,8 +74,9 @@ if ($Mode -eq 'Enroll') {
         $rest = Restore-List $records
         foreach ($language in $rest) { $test.Add($language) }
     }
-    if (-not @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' }).Count) { $test.Add('zh-CN') }
-    $chinese = @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' })[0]
+    # Windows normalizes zh-CN to the canonical zh-Hans-CN on readback.
+    if (-not @($test | Where-Object { $_.LanguageTag -in @('zh-CN', 'zh-Hans-CN') }).Count) { $test.Add('zh-Hans-CN') }
+    $chinese = @($test | Where-Object { $_.LanguageTag -in @('zh-CN', 'zh-Hans-CN') })[0]
     if ($OwnTip -notin @($chinese.InputMethodTips)) { $chinese.InputMethodTips.Add($OwnTip) }
     # Preferences only: no Install-Language, DISM, or language-pack download.
     Set-WinUserLanguageList -LanguageList $test -Force -WarningAction SilentlyContinue
@@ -83,7 +85,7 @@ if ($Mode -eq 'Enroll') {
         Write-Host ('CI language: ' + $language.LanguageTag + '; input profiles: ' + (@($language.InputMethodTips) -join ', '))
     }
     if ($actual[0].LanguageTag -notlike 'en-*') { throw 'CI language setup did not keep English first.' }
-    $actualChinese = @($actual | Where-Object { $_.LanguageTag -eq 'zh-CN' })
+    $actualChinese = @($actual | Where-Object { $_.LanguageTag -in @('zh-CN', 'zh-Hans-CN') })
     if (-not $actualChinese.Count -or $OwnTip -notin @($actualChinese[0].InputMethodTips)) { throw 'Chinese preference or this exact Numpad9 TIP was not enrolled.' }
     Write-Host ('CI language tags: ' + (($actual | ForEach-Object { $_.LanguageTag }) -join ', '))
 } elseif ($Mode -eq 'Restore') {
@@ -106,7 +108,7 @@ if ($Mode -eq 'Enroll') {
     $ownTip = "0804:$clsid$profile"
     $command = "& {`n$languageScript`n} -Mode '$Mode' -SnapshotPath '$escapedSnapshot' -OwnTip '$ownTip'"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    & (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded
+    & (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoLogo -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand $encoded
     if ($LASTEXITCODE -ne 0) { throw "Disposable user-language $Mode failed: $LASTEXITCODE" }
 }
 
