@@ -25,6 +25,9 @@ jobs:
       - name: Automated installer and native window smoke
         shell: pwsh
         run: ./scripts/Test-Installer.ps1
+      - name: Build and SDK-validate MSIX with development identity
+        shell: pwsh
+        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
       - name: Archive corresponding source
         shell: pwsh
         run: ./scripts/Build-SourceArchive.ps1
@@ -38,6 +41,9 @@ jobs:
             artifacts/*-source.zip
             artifacts/installer-smoke/
             artifacts/screenshots/
+            artifacts/*DEVELOPMENT-IDENTITY-UNSIGNED.msix
+            artifacts/msix-*.json
+            artifacts/msix-*.log
             release/x64/
             release/x86/
           if-no-files-found: error

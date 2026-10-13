@@ -431,4 +431,7 @@ FodyWeavers.xsd
 /build/
 /release/
 /artifacts/
+# Microsoft input API grants are local configuration, never source archives.
+/private/
+input-access.json
 .DS_Store

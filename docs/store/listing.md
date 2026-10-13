@@ -1,4 +1,6 @@
-# Store listing drafts
+# Traditional EXE listing reference
+
+The current Microsoft Store distribution uses the separate MSIX host described in [msix.md](msix.md). The text below documents the traditional TSF EXE; do not copy its OS requirements or registration instructions into the MSIX listing.
 
 Product name: Numpad9. The reserved Partner Center name is authoritative. The following text describes the product's functions and supported environments.
 

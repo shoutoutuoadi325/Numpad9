@@ -8,7 +8,7 @@ $folders = @('src', 'data', 'tools', 'tests', 'scripts', 'packaging', 'docs', '.
 $files = @('CMakeLists.txt', 'README.md', 'LICENSE', '.gitignore') | ForEach-Object { Get-Item -LiteralPath (Join-Path $root $_) -Force }
 foreach ($folder in $folders) {
     $path = Join-Path $root $folder
-    if (Test-Path $path) { $files += Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/](__pycache__|node_modules|\.venv)[\\/]' -and $_.Extension -ne '.pyc' } }
+    if (Test-Path $path) { $files += Get-ChildItem -LiteralPath $path -Recurse -File -Force | Where-Object { $_.FullName -notmatch '[\\/](__pycache__|node_modules|\.venv)[\\/]' -and $_.Extension -ne '.pyc' -and $_.Name -ne 'input-access.json' } }
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts') | Out-Null
 $out = Join-Path $root "artifacts/Numpad9-$Version-source.zip"

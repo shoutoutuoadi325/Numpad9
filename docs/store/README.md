@@ -1,8 +1,10 @@
 # Microsoft Store 发布准备
 
+当前选定的 **Microsoft Store 路线是 MSIX**，详见 [msix.md](msix.md)。它使用独立 Store host，Windows 11 24H2+ x64，Store 负责签名，无需购买商业证书。下面保留的 EXE 安装、签名和验证说明适用于 GitHub 的传统 TSF 安装包以及独立 EXE 分发；不要将其最低系统要求或 TSF 启用说明直接用于 MSIX 产品。
+
 当前版本 `0.1.0` 提供原生 TSF 输入法、离线 EXE 安装方案和发布检查。开发流程采用代码审核、Windows 自动构建与测试；按项目要求不设置人工实机测试门槛。Microsoft Store 的最终认证由 Microsoft 完成。
 
-选择 Microsoft Store 的 **EXE/MSI 传统桌面应用**通道。TSF 输入法需要两种位数的 COM 注册，安装器以管理员权限注册到系统中。此版本面向 Windows 10 1809（build 17763）及以上、Windows 11 **x64**；安装器明确拒绝 ARM64 和 32 位 Windows。x64 Windows 中的 32 位应用由附带的 x86 TSF DLL 支持。
+独立 EXE 分发使用传统桌面安装器。TSF 输入法需要两种位数的 COM 注册，安装器以管理员权限注册到系统中。此版本面向 Windows 10 1809（build 17763）及以上、Windows 11 **x64**；安装器明确拒绝 ARM64 和 32 位 Windows。x64 Windows 中的 32 位应用由附带的 x86 TSF DLL 支持。
 
 ## 本地构建与签名
 
