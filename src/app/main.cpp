@@ -312,7 +312,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         Fonts(); SetWindowPos(window,nullptr,rect->left,rect->top,rect->right-rect->left,rect->bottom-rect->top,SWP_NOZORDER|SWP_NOACTIVATE); Layout(); return 0;
     }
     case WM_GETMINMAXINFO: {
-        auto info=reinterpret_cast<MINMAXINFO*>(lParam); info->ptMinTrackSize={Scale(610),Scale(390)}; return 0;
+        auto info=reinterpret_cast<MINMAXINFO*>(lParam);
+        info->ptMinTrackSize={Scale(610),Scale(390)};
+        // Permit a full-size help window on a smaller remote desktop as well.
+        info->ptMaxTrackSize={Scale(4096),Scale(4096)}; return 0;
     }
     case WM_VSCROLL: {
         SCROLLINFO info{}; info.cbSize=sizeof(info); info.fMask=SIF_ALL;
@@ -342,16 +345,29 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case kSettings: ShellExecuteW(window,L"open",L"ms-settings:regionlanguage",nullptr,nullptr,SW_SHOWNORMAL); return 0;
         case kClear: SetWindowTextW(practice,L""); SetFocus(practice); return 0;
         case kHelp:
+#ifdef NUMPAD9_MSIX
+            MessageBoxW(window,T(L"1. 点击「启用九键输入」，再在 Windows 输入法菜单中选择 Numpad9。应用需要 Windows 11 24H2 或更新版本。\n2. 按手机键位的位置输入：nihao → 手机 64426 → 电脑小键盘 6 4 4 8 6。\n3. 空格 / Enter 确认；方向键 / * 选择；+ / − 翻页；Esc 取消；Backspace 删除。\n4. / 或 Ctrl + Shift + E 切换拼音与英文；电脑 7 输入逗号；小数点输入句号；0 确认或输入空格。\n5. 输入服务仅处理当前普通文本框。密码、PIN、私密和受保护字段不进行转换。\n\n关闭窗口时输入服务可留在托盘中。点击「停用九键输入」可停止转换；右键托盘选择「退出」可关闭应用。",
+                L"1. Enable nine-key input, then select Numpad9 in the Windows input-method menu. Windows 11 24H2 or later is required.\n2. Follow phone key positions: nihao -> phone 64426 -> PC numpad 6 4 4 8 6.\n3. Space / Enter commits; arrows / * select; + / - pages; Esc cancels; Backspace deletes.\n4. / or Ctrl + Shift + E switches Pinyin / English; PC 7 inserts a comma; decimal inserts a full stop; 0 commits or inserts a space.\n5. Use ordinary text fields. Passwords, PINs, private and protected fields are excluded.\n\nClose the window to keep input running in the tray. Stop nine-key input disables conversion; Exit in the tray menu closes the app."),T(L"使用说明",L"Keyboard guide"),MB_OK); return 0;
+#else
             MessageBoxW(window,T(L"1. 安装后，点击「切换到 Numpad9」或按 Win + 空格选择 Numpad9。\n2. 看手机键位的位置，忽略电脑键帽数字。中文输入不带声调的完整拼音：nihao → 64426；按电脑小键盘 6 4 4 8 6。\n3. 空格 / Enter 确认候选；方向键 / 小键盘 * 选择；小键盘 + / − 翻页；Esc 取消；Backspace 删除。\n4. 小键盘 / 或 Ctrl + Shift + E 切换中英文；手机 1（电脑 7）输入逗号；小键盘小数点输入句号；小键盘 0 确认候选或输入空格。\n5. 可逐词确认组合成句。不支持云预测或个人词库学习。切回其他输入法即可正常使用小键盘。\n\n输入法在当前文本应用内工作；不适用于密码、安全桌面或不支持 TSF 的应用。", 
                 L"1. Click Switch to Numpad9, or choose Numpad9 with Win + Space.\n2. Use phone key positions, ignoring PC keycap numbers. For Pinyin nihao (logical 64426), press PC numpad 6 4 4 8 6.\n3. Space / Enter commits; arrows / numpad * select; + / - pages; Esc cancels; Backspace deletes.\n4. Numpad / or Ctrl + Shift + E switches Chinese / English. Phone 1 (PC 7) inserts a comma; keypad decimal inserts a full stop; numpad 0 commits or inserts a space.\n5. Commit words to compose sentences. Cloud prediction and personal learning are not provided. Switch IMEs to restore numeric typing.\n\nUse ordinary TSF-compatible text fields. Passwords and secure desktops are excluded."),T(L"使用说明",L"Keyboard guide"),MB_OK); return 0;
+#endif
         case kPrivacy:
-            MessageBoxW(window,T(L"Numpad9 隐私政策 · 2026-10-13\n\nNumpad9 完全离线转换九键输入。不收集、保存或传输按键、输入文字、账号、设备标识或诊断数据；无广告、统计 SDK 或云服务。输入缓冲仅存在当前应用的内存中，用于组成候选并将你确认的文字交给当前文本应用。切换上下文或停用时清空未确认输入。\n\n练习框文字只在内存中，关闭窗口后丢弃。应用使用只读内置词库，不建立个人输入历史。安装、更新和卸载由安装程序及 Windows 处理。Microsoft Store 的数据处理适用微软政策；你输入文字的目标应用适用其自身政策。\n\n你可随时切换输入法，或通过 Windows 设置卸载 Numpad9。源代码及问题反馈：github.com/shoutoutuoadi325/Numpad9。",
-                L"Numpad9 Privacy Policy · 2026-10-13\n\nNumpad9 converts nine-key input entirely offline. It does not collect, save, or transmit keystrokes, text, account information, device identifiers, or diagnostics. There are no ads, analytics SDKs, or cloud services. The current input buffer exists only in the text application's memory to compose candidates and deliver confirmed text. Pending input is cleared when the context changes or the service deactivates.\n\nPractice text exists only in memory and is discarded on window close. The bundled dictionary is read-only; no personal typing history is created. Windows and the installer handle installation and removal. Microsoft Store and target text applications apply their own privacy policies.\n\nSwitch IMEs at any time, or uninstall via Windows Settings. Source and issues: github.com/shoutoutuoadi325/Numpad9."),T(L"隐私政策",L"Privacy policy"),MB_OK); return 0;
-        case kAbout:
-            if(MessageBoxW(window,T(L"Numpad9 0.1.0\n手机布局九键拼音与英文输入法。Windows 10 1809+ / Windows 11 x64。\n\n程序源码：GNU GPL v3（仓库 LICENSE）。\n中文词库基于 CC-CEDICT，采用 CC BY-SA 4.0；转换与常用词排序详见随包提供的许可和词库说明。\n\n点击「确定」在浏览器中查看源码与完整许可；浏览器连接网络。", 
-                L"Numpad9 0.1.0\nPhone-layout Pinyin and English IME. Windows 10 1809+ / Windows 11 x64.\n\nSource: GNU GPL v3 (repository LICENSE).\nChinese dictionary derived from CC-CEDICT, licensed CC BY-SA 4.0. Transformation and ranking notes accompany the installer.\n\nOK opens source and full licenses in your browser using the network."),T(L"关于与许可",L"About and licenses"),MB_OKCANCEL|MB_ICONINFORMATION)==IDOK)
+            MessageBoxW(window,T(L"Numpad9 隐私政策 · 2026-10-13\n\nNumpad9 完全离线转换九键输入。不收集、保存或传输按键、输入文字、账号、设备标识或诊断数据；无广告、统计 SDK 或云服务。输入缓冲仅存在当前输入服务的内存中，用于组成候选并将你确认的文字交给当前文本应用。切换上下文或停用时清空未确认输入。\n\n练习框文字只在内存中，关闭窗口后丢弃。应用使用只读内置词库，不建立个人输入历史。安装、更新和卸载由安装程序及 Windows 处理。Microsoft Store 的数据处理适用微软政策；你输入文字的目标应用适用其自身政策。\n\n你可随时切换输入法，或通过 Windows 设置卸载 Numpad9。源代码及问题反馈：github.com/shoutoutuoadi325/Numpad9。",
+                L"Numpad9 Privacy Policy · 2026-10-13\n\nNumpad9 converts nine-key input entirely offline. It does not collect, save, or transmit keystrokes, text, account information, device identifiers, or diagnostics. There are no ads, analytics SDKs, or cloud services. The current input buffer exists only in input-service memory to compose candidates and deliver confirmed text. Pending input is cleared when the context changes or the service deactivates.\n\nPractice text exists only in memory and is discarded on window close. The bundled dictionary is read-only; no personal typing history is created. Windows and the installer handle installation and removal. Microsoft Store and target text applications apply their own privacy policies.\n\nSwitch IMEs at any time, or uninstall via Windows Settings. Source and issues: github.com/shoutoutuoadi325/Numpad9."),T(L"隐私政策",L"Privacy policy"),MB_OK); return 0;
+        case kAbout: {
+            std::wstring about = T(L"Numpad9 0.1.0\n手机布局九键拼音与英文输入法。\n", L"Numpad9 0.1.0\nPhone-layout Pinyin and English input method.\n");
+#ifdef NUMPAD9_MSIX
+            about += L"Windows 11 24H2+ x64 · Microsoft Store MSIX\n";
+#else
+            about += L"Windows 10 1809+ / Windows 11 x64 · EXE\n";
+#endif
+            about += T(L"\n程序源码：GNU GPL v3。中文词库：CC-CEDICT，CC BY-SA 4.0。英文词表：SCOWL，适用随包许可。完整许可、署名和词库说明随应用提供。\n\n点击「确定」在浏览器中查看源码及完整许可；浏览器连接网络。",
+                       L"\nSource: GNU GPL v3. Chinese dictionary: CC-CEDICT, CC BY-SA 4.0. English words: SCOWL, under its bundled licenses. Full licenses, attribution and dictionary notes accompany the app.\n\nOK opens source and full licenses in your browser using the network.");
+            if (MessageBoxW(window, about.c_str(), T(L"关于与许可",L"About and licenses"), MB_OKCANCEL|MB_ICONINFORMATION)==IDOK)
                 ShellExecuteW(window,L"open",L"https://github.com/shoutoutuoadi325/Numpad9",nullptr,nullptr,SW_SHOWNORMAL);
             return 0;
+        }
         } break;
     case WM_DESTROY:
 #ifdef NUMPAD9_MSIX

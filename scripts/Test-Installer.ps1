@@ -136,7 +136,9 @@ public static class Numpad9WindowCapture {
       Rect rect;
       if (!GetWindowRect(window, out rect)) throw new InvalidOperationException("Window API failed with Win32 error " + Marshal.GetLastWin32Error());
       int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-      if (width != 1366 || height != 900) throw new InvalidOperationException("Unexpected physical window dimensions.");
+      if (width != 1366 || height != 900)
+        throw new InvalidOperationException("Requested physical window 1366x900, observed " + width + "x" + height +
+          " at rectangle (" + rect.Left + "," + rect.Top + ")-(" + rect.Right + "," + rect.Bottom + ").");
       using (Bitmap bitmap = new Bitmap(width, height)) {
         using (Graphics graphics = Graphics.FromImage(bitmap)) {
           IntPtr dc = graphics.GetHdc();

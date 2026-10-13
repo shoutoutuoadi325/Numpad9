@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 jobs:
-  build:
+  exe:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -25,10 +25,8 @@ jobs:
       - name: Automated installer and native window smoke
         shell: pwsh
         run: ./scripts/Test-Installer.ps1
-      - name: Build and SDK-validate MSIX with development identity
-        shell: pwsh
-        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
       - name: Archive corresponding source
+        if: always()
         shell: pwsh
         run: ./scripts/Build-SourceArchive.ps1
       - name: Upload unsigned testing artifacts
@@ -41,10 +39,31 @@ jobs:
             artifacts/*-source.zip
             artifacts/installer-smoke/
             artifacts/screenshots/
+            release/x64/
+            release/x86/
+          if-no-files-found: error
+          retention-days: 14
+  msix:
+    # Independent of EXE install/screenshot checks; each job uses the same commit.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and SDK-validate MSIX with development identity
+        shell: pwsh
+        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - name: Archive corresponding source
+        if: always()
+        shell: pwsh
+        run: ./scripts/Build-SourceArchive.ps1
+      - name: Upload MSIX development-identity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-MSIX-DEVELOPMENT-IDENTITY-Windows-x64
+          path: |
             artifacts/*DEVELOPMENT-IDENTITY-UNSIGNED.msix
             artifacts/msix-*.json
             artifacts/msix-*.log
-            release/x64/
-            release/x86/
+            artifacts/*-source.zip
           if-no-files-found: error
           retention-days: 14
