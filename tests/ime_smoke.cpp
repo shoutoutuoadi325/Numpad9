@@ -14,6 +14,9 @@
 #define TF_IPPMF_FORPROCESS 0x10000000
 #define TF_IPPMF_ENABLEPROFILE 0x00000001
 #endif
+#ifndef TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE
+#define TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE 0x00000004
+#endif
 
 namespace {
 template<class T> struct Com {
@@ -82,14 +85,15 @@ int RegisteredSmoke() {
         SendMessageW(edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
         ShowWindow(window, SW_SHOW); SetForegroundWindow(window); SetActiveWindow(window); SetFocus(edit);
         Pump(150);
-        // ActivateProfile requires the requested language to be current. These
-        // changes are restored below; no desktop-wide/default profile is set.
+        // Queue the selected profile before switching languages, as documented
+        // by DONTCARECURRENTINPUTLANGUAGE. Scope remains this test process.
         if (check(profiles->EnableLanguageProfile(numpad9::ime::kClsid, numpad9::ime::kLanguage,
             numpad9::ime::kProfile, TRUE), "Enable installed profile") &&
-            check(profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage), "Select test input language") &&
             check(manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, numpad9::ime::kLanguage,
-                numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr, TF_IPPMF_FORPROCESS),
-                "Activate installed Numpad9 profile")) {
+                numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr,
+                TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE),
+                "Queue installed Numpad9 profile") &&
+            check(profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage), "Select test input language")) {
             bool active = false;
             const ULONGLONG deadline = GetTickCount64() + 3000;
             do {
@@ -118,10 +122,16 @@ int RegisteredSmoke() {
                 DWORD flags = 0;
                 const HRESULT flagsResult = thread->QueryInterface(IID_ITfThreadMgrEx, extended.out());
                 if (SUCCEEDED(flagsResult)) extended->GetActiveFlags(&flags);
+                LANGID language = 0; profiles->GetCurrentLanguage(&language);
+                BOOL enabled = FALSE; profiles->IsEnabledLanguageProfile(numpad9::ime::kClsid,
+                    numpad9::ime::kLanguage, numpad9::ime::kProfile, &enabled);
                 std::cerr << "Installed profile did not become a foreground key service with an edit context; "
                     << "active=0x" << std::hex << profileResult << ", foreground=0x" << foregroundResult
                     << ", focus=0x" << focusResult << ", context=0x" << contextResult
                     << ", activeFlags=0x" << flags << ", client=0x" << client
+                    << ", profileType=" << selected.dwProfileType << ", profileLanguage=" << selected.langid
+                    << ", currentLanguage=" << language << ", enabled=" << enabled
+                    << ", keyboardLayout=" << GetKeyboardLayout(0)
                     << ", editStyle=0x" << SendMessageW(edit, EM_GETEDITSTYLE, 0, 0)
                     << ", focusedEdit=" << (GetFocus() == edit)
                     << ", foregroundWindow=" << (GetForegroundWindow() == window) << '\n';

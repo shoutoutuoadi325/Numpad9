@@ -77,3 +77,20 @@ Capture debug output with a debugger or a dedicated diagnostic collector while e
 Do not treat selected profile metadata alone as proof of live input processing, directly call `Activate` to manufacture a passing registered-profile result, or push a context detached from the test's actual text store. Keep the foreground sink and genuine focused edit context assertions.
 
 Primary documentation checked on 2026-10-13.
+
+## Profile selection after a language change
+
+When a real RichEdit context and foreground window are present but the selected CLSID and profile GUID are both zero, inspect `dwProfileType` before inferring a service load failure. Both GUIDs are documented as null for `TF_PROFILETYPE_KEYBOARDLAYOUT`. Log the actual selected type, language, HKL and flags. [TF_INPUTPROCESSORPROFILE](https://learn.microsoft.com/en-us/windows/win32/api/msctf/ns-msctf-tf_inputprocessorprofile).
+
+Separate the host's setup steps:
+
+1. Enable Numpad9 and verify the returned enabled BOOL is true. Obtain its exact `GetProfile` record and enumerate profiles for language `0x0804`; print whether the expected CLSID/profile is present and enabled.
+2. Call `ChangeCurrentLanguage(0x0804)` and pump host messages before profile activation. Check the actual current language and keyboard layout after the pump; fail explicitly if the requested language did not become current.
+3. Activate Numpad9 once with `TF_IPPMF_FORPROCESS`. Snapshot the selected profile immediately, before pumping again.
+4. Pump and snapshot again, retaining the real foreground service and focused edit context assertions.
+
+The before/after snapshots distinguish activation that never selects Numpad9 from activation subsequently replaced by a language/focus update. A message-pump timing cause remains a hypothesis until those snapshots demonstrate it; the `ChangeCurrentLanguage` documentation does not specify an asynchronous completion contract. [ChangeCurrentLanguage](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofiles-changecurrentlanguage), [GetProfile](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-getprofile), [EnumProfiles](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-enumprofiles).
+
+An alternative explicitly documented sequence, when the current language differs, is `ActivateProfile` with `TF_IPPMF_FORPROCESS | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE` before changing the language. That flag asks TSF to activate the chosen profile when its language is switched. It does not remove the requirement that the chosen profile actually becomes active. [ActivateProfile flags](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile).
+
+Use an application-owned registered top-level window procedure that forwards unhandled messages to `DefWindowProcW`. Observe language-change messages without swallowing them; Windows forwards them to child controls through `DefWindowProc`. TIP-only changes may not produce `WM_INPUTLANGCHANGE`, so add `ITfActiveLanguageProfileNotifySink` if lifecycle ordering is needed. [WM_INPUTLANGCHANGE](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-inputlangchange).

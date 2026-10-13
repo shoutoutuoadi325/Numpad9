@@ -27,6 +27,9 @@ std::atomic<long> gObjects{0}, gServerLocks{0};
 #define TF_IPPMF_FORSESSION 0x20000000
 #define TF_IPPMF_ENABLEPROFILE 0x00000001
 #endif
+#ifndef TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE
+#define TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE 0x00000004
+#endif
 
 namespace {
 constexpr int kActivate = 101, kSettings = 102, kHelp = 103, kPrivacy = 104,
@@ -253,7 +256,16 @@ void Activate() {
         IID_ITfInputProcessorProfileMgr,reinterpret_cast<void**>(&manager));
     if (SUCCEEDED(result)) {
         result=manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR,numpad9::ime::kLanguage,
-            numpad9::ime::kClsid,numpad9::ime::kProfile,nullptr,TF_IPPMF_FORSESSION|TF_IPPMF_ENABLEPROFILE);
+            numpad9::ime::kClsid,numpad9::ime::kProfile,nullptr,
+            TF_IPPMF_FORSESSION|TF_IPPMF_ENABLEPROFILE|TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
+        if (result == S_OK) {
+            ITfInputProcessorProfiles* profiles=nullptr;
+            result=manager->QueryInterface(IID_ITfInputProcessorProfiles,reinterpret_cast<void**>(&profiles));
+            if (SUCCEEDED(result)) {
+                result=profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage);
+                profiles->Release();
+            }
+        }
         manager->Release();
     }
     if (result!=S_OK) {
