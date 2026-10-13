@@ -1,13 +1,138 @@
 // Windows-only COM lifecycle smoke test. No registry writes or SendInput.
-// A standalone TSF host client ID is not an activated text-service client ID;
-// TSF owns successful service activation after profile registration.
+// Successful registration/activation is tested separately with --registered.
+// That path asks Windows to activate the installed profile, not a manually
+// constructed service whose aggregate Activate HRESULT cannot locate a failure.
 #include <windows.h>
 #include <msctf.h>
+#include <richedit.h>
 #include <iostream>
+#include <cwchar>
 #include "identity.h"
 
+#ifndef TF_IPPMF_FORPROCESS
+#define TF_IPPMF_FORPROCESS 0x10000000
+#define TF_IPPMF_ENABLEPROFILE 0x00000001
+#endif
+
+namespace {
+template<class T> struct Com {
+    T* p = nullptr;
+    ~Com() { if (p) p->Release(); }
+    void** out() { return reinterpret_cast<void**>(&p); }
+    T* operator->() const { return p; }
+};
+
+void Pump(DWORD milliseconds) {
+    const ULONGLONG deadline = GetTickCount64() + milliseconds;
+    do {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        if (GetTickCount64() >= deadline) break;
+        MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    } while (true);
+}
+
+int RegisteredSmoke() {
+    Com<ITfThreadMgr> thread;
+    Com<ITfInputProcessorProfiles> profiles;
+    Com<ITfInputProcessorProfileMgr> manager;
+    Com<ITfKeystrokeMgr> keys;
+    int result = 0;
+    auto check = [&result](HRESULT hr, const char* operation) {
+        if (hr != S_OK) {
+            std::cerr << operation << ": 0x" << std::hex << hr << '\n'; result = 10;
+        }
+        return hr == S_OK;
+    };
+    if (!check(CoCreateInstance(CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER,
+        IID_ITfThreadMgr, thread.out()), "Create TSF thread manager") ||
+        !check(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+        IID_ITfInputProcessorProfiles, profiles.out()), "Create installed profiles manager") ||
+        !check(profiles->QueryInterface(IID_ITfInputProcessorProfileMgr, manager.out()), "Profile manager interface") ||
+        !check(thread->QueryInterface(IID_ITfKeystrokeMgr, keys.out()), "Keystroke manager interface")) return result;
+
+    TF_INPUTPROCESSORPROFILE previous{};
+    const bool hadPrevious = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &previous) == S_OK;
+    LANGID previousLanguage = 0;
+    const bool hadLanguage = profiles->GetCurrentLanguage(&previousLanguage) == S_OK;
+    BOOL previouslyEnabled = FALSE;
+    if (!check(profiles->IsEnabledLanguageProfile(numpad9::ime::kClsid,
+        numpad9::ime::kLanguage, numpad9::ime::kProfile, &previouslyEnabled),
+        "Installed profile enablement")) return result;
+
+    TfClientId client = 0;
+    if (!check(thread->Activate(&client), "Activate TSF host thread")) return result;
+    HMODULE richEdit = LoadLibraryW(L"msftedit.dll");
+    HWND window = richEdit ? CreateWindowExW(0, L"STATIC", L"Numpad9 registered TSF test",
+        WS_OVERLAPPEDWINDOW, 20, 20, 400, 160, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr) : nullptr;
+    HWND edit = window ? CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE |
+        WS_TABSTOP | ES_MULTILINE, 10, 10, 360, 90, window, nullptr, GetModuleHandleW(nullptr), nullptr) : nullptr;
+    if (!edit) {
+        std::cerr << "Create TSF RichEdit host: " << GetLastError() << '\n'; result = 11;
+    } else {
+        SendMessageW(edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
+        ShowWindow(window, SW_SHOW); SetForegroundWindow(window); SetActiveWindow(window); SetFocus(edit);
+        Pump(150);
+        // ActivateProfile requires the requested language to be current. These
+        // changes are restored below; no desktop-wide/default profile is set.
+        if (check(profiles->EnableLanguageProfile(numpad9::ime::kClsid, numpad9::ime::kLanguage,
+            numpad9::ime::kProfile, TRUE), "Enable installed profile") &&
+            check(profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage), "Select test input language") &&
+            check(manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, numpad9::ime::kLanguage,
+                numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr, TF_IPPMF_FORPROCESS),
+                "Activate installed Numpad9 profile")) {
+            bool active = false;
+            const ULONGLONG deadline = GetTickCount64() + 3000;
+            do {
+                Pump(30);
+                TF_INPUTPROCESSORPROFILE selected{};
+                CLSID foreground = CLSID_NULL;
+                Com<ITfDocumentMgr> document;
+                Com<ITfContext> context;
+                active = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &selected) == S_OK &&
+                    selected.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR &&
+                    selected.langid == numpad9::ime::kLanguage &&
+                    IsEqualGUID(selected.clsid, numpad9::ime::kClsid) &&
+                    IsEqualGUID(selected.guidProfile, numpad9::ime::kProfile) &&
+                    keys->GetForeground(&foreground) == S_OK && IsEqualGUID(foreground, numpad9::ime::kClsid) &&
+                    thread->GetFocus(&document.p) == S_OK && document.p &&
+                    document->GetTop(&context.p) == S_OK && context.p;
+                if (active) break;
+            } while (GetTickCount64() < deadline);
+            if (!active) {
+                TF_INPUTPROCESSORPROFILE selected{}; CLSID foreground = CLSID_NULL;
+                std::cerr << "Installed profile did not become a foreground key service with an edit context; "
+                    << "active=0x" << std::hex << manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &selected)
+                    << ", foreground=0x" << keys->GetForeground(&foreground) << '\n'; result = 12;
+            }
+        }
+    }
+    // Always restore process state and the user's existing enabled flag, also
+    // on activation failure. Failure to restore is a test failure itself.
+    if (hadLanguage) check(profiles->ChangeCurrentLanguage(previousLanguage), "Restore input language");
+    if (hadPrevious) check(manager->ActivateProfile(previous.dwProfileType, previous.langid,
+        previous.clsid, previous.guidProfile, previous.hkl, TF_IPPMF_FORPROCESS), "Restore process input profile");
+    else {
+        const HRESULT hr = manager->DeactivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, numpad9::ime::kLanguage,
+            numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr, TF_IPPMF_FORPROCESS);
+        if (FAILED(hr)) check(hr, "Deactivate test profile");
+    }
+    check(profiles->EnableLanguageProfile(numpad9::ime::kClsid, numpad9::ime::kLanguage,
+        numpad9::ime::kProfile, previouslyEnabled), "Restore user profile enablement");
+    if (window) DestroyWindow(window);
+    Pump(100);
+    check(thread->Deactivate(), "Deactivate TSF host thread");
+    if (richEdit) FreeLibrary(richEdit);
+    if (!result) std::cout << "Installed TSF profile, foreground key sink and RichEdit context checks passed.\n";
+    return result;
+}
+}
+
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) { std::cerr << "Expected absolute IME DLL path\n"; return 1; }
+    const bool registered = argc == 3 && std::wcscmp(argv[2], L"--registered") == 0;
+    if (argc != 2 && !registered) { std::cerr << "Expected absolute IME DLL path [--registered]\n"; return 1; }
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
     HMODULE dll = LoadLibraryW(argv[1]);
     if (!dll) { CoUninitialize(); std::cerr << "DLL load failed\n"; return 3; }
@@ -44,6 +169,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!result && canUnload() != S_OK) { std::cerr << "COM references leaked\n"; result = 6; }
     // Do not unload a module whose COM objects remain live.
     if (!canUnload || canUnload() == S_OK) FreeLibrary(dll);
+    if (!result && registered) result = RegisteredSmoke();
     CoUninitialize();
     if (!result) std::cout << "TSF COM factory, invalid-state handling and unload checks passed.\n";
     return result;

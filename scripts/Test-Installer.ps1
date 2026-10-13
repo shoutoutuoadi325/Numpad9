@@ -2,6 +2,7 @@
 param(
     [string]$Version = '0.1.0',
     [string]$Installer,
+    [string]$Configuration = 'Release',
     [switch]$SkipScreenshot
 )
 $ErrorActionPreference = 'Stop'
@@ -105,37 +106,69 @@ try {
     if ($hostProcess.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Host did not create a real native window.' }
     if (-not $SkipScreenshot) {
         Add-Type -AssemblyName System.Drawing
-        Add-Type @'
+        Add-Type -ReferencedAssemblies @([Drawing.Bitmap].Assembly.Location, [Drawing.Size].Assembly.Location, [ComponentModel.Win32Exception].Assembly.Location, [Threading.Thread].Assembly.Location) @'
 using System;
+using System.ComponentModel;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
 public static class Numpad9WindowCapture {
-  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int width, int height, uint flags);
-  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
-  [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr region, uint flags);
-  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint message, IntPtr wp, IntPtr lp);
+  [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int width, int height, uint flags);
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool GetWindowRect(IntPtr h, out Rect rect);
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+  [DllImport("user32.dll")] private static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr region, uint flags);
+  [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr h, uint message, IntPtr wp, IntPtr lp);
+  public static int[] Capture(IntPtr window, string path) {
+    // Keep resize, measurement and rendering on this one DPI-aware thread.
+    IntPtr previous = SetThreadDpiAwarenessContext(new IntPtr(-4)); // PER_MONITOR_AWARE_V2
+    if (previous == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      if (!SetWindowPos(window, IntPtr.Zero, 0, 0, 1366, 900, 0x0040))
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      SendMessage(window, 0x0111, new IntPtr(106), IntPtr.Zero); // Actual app English control.
+      RedrawWindow(window, IntPtr.Zero, IntPtr.Zero, 0x0581);
+      Thread.Sleep(500);
+      Rect rect;
+      if (!GetWindowRect(window, out rect)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+      if (width != 1366 || height != 900) throw new InvalidOperationException("Unexpected physical window dimensions.");
+      using (Bitmap bitmap = new Bitmap(width, height)) {
+        using (Graphics graphics = Graphics.FromImage(bitmap)) {
+          IntPtr dc = graphics.GetHdc();
+          try {
+            if (!PrintWindow(window, dc, 2)) throw new Win32Exception(Marshal.GetLastWin32Error());
+          } finally { graphics.ReleaseHdc(dc); }
+        }
+        int first = bitmap.GetPixel(width / 2, height / 2).ToArgb();
+        bool different = false;
+        for (int x = 25; x < width; x += 35)
+          for (int y = 25; y < height; y += 25)
+            if (bitmap.GetPixel(x, y).ToArgb() != first) different = true;
+        if (!different) throw new InvalidOperationException("Captured window appears blank.");
+        bitmap.Save(path, ImageFormat.Png);
+      }
+      return new int[] { width, height };
+    } finally { SetThreadDpiAwarenessContext(previous); }
+  }
 }
 '@
-        $window = $hostProcess.MainWindowHandle
-        [Numpad9WindowCapture]::SetWindowPos($window, [IntPtr]::Zero, 0, 0, 1366, 768, 0x0040) | Out-Null
-        # Switch the real app's bilingual control to English; no mockup or fabricated UI.
-        [Numpad9WindowCapture]::SendMessage($window, 0x0111, [IntPtr]106, [IntPtr]::Zero) | Out-Null
-        [Numpad9WindowCapture]::RedrawWindow($window, [IntPtr]::Zero, [IntPtr]::Zero, 0x0581) | Out-Null
-        Start-Sleep -Milliseconds 500
-        $bitmap = [Drawing.Bitmap]::new(1366, 768)
-        $graphics = [Drawing.Graphics]::FromImage($bitmap)
-        $dc = $graphics.GetHdc()
-        try {
-            if (-not [Numpad9WindowCapture]::PrintWindow($window, $dc, 2)) { throw 'Native screenshot capture failed.' }
-        } finally { $graphics.ReleaseHdc($dc); $graphics.Dispose() }
-        try {
-            $colors = [Collections.Generic.HashSet[int]]::new()
-            for ($x = 25; $x -lt 1366; $x += 35) { for ($y = 25; $y -lt 768; $y += 25) { $colors.Add($bitmap.GetPixel($x, $y).ToArgb()) | Out-Null } }
-            if ($colors.Count -lt 3) { throw 'Captured window appears blank; do not publish it as a Store screenshot.' }
-            $screenshots = Join-Path $root 'artifacts/screenshots'
-            New-Item -ItemType Directory -Force -Path $screenshots | Out-Null
-            $screenshot = Join-Path $screenshots 'main-window.png'
-            $bitmap.Save($screenshot, [Drawing.Imaging.ImageFormat]::Png)
-        } finally { $bitmap.Dispose() }
+        $screenshots = Join-Path $root 'artifacts/screenshots'
+        New-Item -ItemType Directory -Force -Path $screenshots | Out-Null
+        $screenshot = Join-Path $screenshots 'main-window.png'
+        $dimensions = [Numpad9WindowCapture]::Capture($hostProcess.MainWindowHandle, $screenshot)
+        Write-Host "Captured the actual native window at $($dimensions[0]) x $($dimensions[1]) physical pixels."
+    }
+    foreach ($pair in @(@('x64', $dir64), @('x86', $dir32))) {
+        $arch = $pair[0]
+        $smoke = Join-Path $root "build/windows-$arch/$Configuration/ime_smoke.exe"
+        if (-not (Test-Path -LiteralPath $smoke)) { throw "Missing $arch registered-profile smoke executable: $smoke" }
+        $ime = [IO.Path]::GetFullPath((Join-Path $pair[1] "versions/$Version/Numpad9Ime.dll"))
+        $smokeLog = Join-Path $artifacts "registered-$arch.log"
+        & $smoke $ime '--registered' 2>&1 | Tee-Object -FilePath $smokeLog
+        if ($LASTEXITCODE -ne 0) { throw "Actual TSF registered-profile smoke failed for $arch (exit $LASTEXITCODE). See $smokeLog" }
     }
     Stop-OwnHost
     Uninstall-OwnPackage
@@ -161,7 +194,7 @@ public static class Numpad9WindowCapture {
         $passed = $false
         Write-Warning "Own-package cleanup failed: $cleanupFailure"
     }
-    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; cleanupFailure = $cleanupFailure } |
+    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration and TSF profile activation, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; cleanupFailure = $cleanupFailure } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifacts 'result.json') -Encoding UTF8
     if ($cleanupFailure -and -not $failure) { throw $cleanupFailure }
 }
