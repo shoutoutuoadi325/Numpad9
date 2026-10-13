@@ -263,6 +263,12 @@ void Activate() {
             result=manager->QueryInterface(IID_ITfInputProcessorProfiles,reinterpret_cast<void**>(&profiles));
             if (SUCCEEDED(result)) {
                 result=profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage);
+                if (result == S_OK) {
+                    LANGID currentLanguage = 0;
+                    result=profiles->GetCurrentLanguage(&currentLanguage);
+                    if (result == S_OK && currentLanguage != numpad9::ime::kLanguage)
+                        result=HRESULT_FROM_WIN32(ERROR_NOT_READY);
+                }
                 profiles->Release();
             }
         }

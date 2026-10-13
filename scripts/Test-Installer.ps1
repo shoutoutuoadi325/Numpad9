@@ -75,13 +75,16 @@ if ($Mode -eq 'Enroll') {
     }
     if (-not @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' }).Count) { $test.Add('zh-CN') }
     $chinese = @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' })[0]
-    if (-not $chinese.InputMethodTips.Contains($OwnTip)) { $chinese.InputMethodTips.Add($OwnTip) }
+    if ($OwnTip -notin @($chinese.InputMethodTips)) { $chinese.InputMethodTips.Add($OwnTip) }
     # Preferences only: no Install-Language, DISM, or language-pack download.
     Set-WinUserLanguageList -LanguageList $test -Force -WarningAction SilentlyContinue
     $actual = Get-WinUserLanguageList
+    foreach ($language in $actual) {
+        Write-Host ('CI language: ' + $language.LanguageTag + '; input profiles: ' + (@($language.InputMethodTips) -join ', '))
+    }
     if ($actual[0].LanguageTag -notlike 'en-*') { throw 'CI language setup did not keep English first.' }
     $actualChinese = @($actual | Where-Object { $_.LanguageTag -eq 'zh-CN' })
-    if (-not $actualChinese.Count -or -not $actualChinese[0].InputMethodTips.Contains($OwnTip)) { throw 'Chinese preference or this exact Numpad9 TIP was not enrolled.' }
+    if (-not $actualChinese.Count -or $OwnTip -notin @($actualChinese[0].InputMethodTips)) { throw 'Chinese preference or this exact Numpad9 TIP was not enrolled.' }
     Write-Host ('CI language tags: ' + (($actual | ForEach-Object { $_.LanguageTag }) -join ', '))
 } elseif ($Mode -eq 'Restore') {
     $records = @(Get-Content -Raw -LiteralPath $SnapshotPath | ConvertFrom-Json)
