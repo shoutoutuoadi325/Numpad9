@@ -51,6 +51,9 @@ jobs:
       - name: Build and SDK-validate MSIX with development identity
         shell: pwsh
         run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - name: Store host startup and genuine bilingual onboarding screenshots
+        shell: pwsh
+        run: ./scripts/Test-StoreHost.ps1
       - name: Archive corresponding source
         if: always()
         shell: pwsh
@@ -64,6 +67,8 @@ jobs:
             artifacts/*DEVELOPMENT-IDENTITY-UNSIGNED.msix
             artifacts/msix-*.json
             artifacts/msix-*.log
+            artifacts/store-host-smoke/
+            artifacts/screenshots/store-host-*.png
             artifacts/*-source.zip
           if-no-files-found: error
           retention-days: 14

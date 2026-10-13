@@ -46,6 +46,8 @@ MSIX 使用独立 `Numpad9Store.exe`，目标为 **Windows 11 24H2（build 26100
 
 GitHub CI 以独立 job 构建两条路线：EXE job 编译、测试、实际注册激活、截图和卸载；MSIX job 独立编译开发身份包并执行 SDK 语义检查。两者使用同一个提交，分别上传包、检查输出和对应源码归档，因此 EXE 截图失败不会阻塞 MSIX 编译诊断。Store 真实身份、授权和审批不会由开发配置冒充。分发版本的完整对应源码归档应包括两种实现和构建工具，保留词典许可。
 
+MSIX job 还运行 `Test-StoreHost.ps1`：以未打包方式启动同一个新 Store host，仅检查 WinRT 初始化和默认引导窗口，真实捕获 `store-host-zh.png`、`store-host-en.png` 两张 1366×900 窗口图，并正常关闭自己启动的进程。它只发送语言按钮命令，不启用输入、不调用授权流程、不安装包。JSON 报告明确标识 `inputActivated=false` 和 `microsoftInputGrantValidated=false`。这些是实际 UI 图；不能把它们当作已授权的系统输入或安装成功证据。
+
 Store listing 应说明 Windows 11 24H2+、x64、数字小键盘、真实启用方式和本地处理输入，不写开发过程。Store 截图来自实际运行的 Store host，不能用 EXE 的 TSF 注册界面冒充 MSIX 功能。GitHub 文档可另行链接支持 Windows 10 1809+ 的传统 EXE。
 
 ## 官方依据

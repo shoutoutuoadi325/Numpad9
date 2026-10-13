@@ -31,7 +31,7 @@ std::atomic<long> gObjects{0}, gServerLocks{0};
 namespace {
 constexpr int kActivate = 101, kSettings = 102, kHelp = 103, kPrivacy = 104,
               kAbout = 105, kLanguage = 106, kClear = 107, kPractice = 108;
-HINSTANCE instance;
+HINSTANCE appModule;
 HWND mainWindow, practice, status;
 HFONT bodyFont, titleFont, smallFont, keyFont;
 UINT dpi = 96;
@@ -88,7 +88,7 @@ void InputChanged(const numpad9::msix::Snapshot& snapshot) {
 void AddTray(HWND window) {
     NOTIFYICONDATAW icon{}; icon.cbSize = sizeof(icon); icon.hWnd = window; icon.uID = 1;
     icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    icon.uCallbackMessage = kTrayMessage; icon.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
+    icon.uCallbackMessage = kTrayMessage; icon.hIcon = LoadIconW(appModule, MAKEINTRESOURCEW(1));
     wcscpy_s(icon.szTip, L"Numpad9 九键输入 / Nine-key input");
     trayAdded = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
 }
@@ -104,7 +104,7 @@ const wchar_t* T(const wchar_t* zh, const wchar_t* en) { return english ? en : z
 HWND Control(const wchar_t* type, const wchar_t* text, DWORD style, int id = 0) {
     if (std::wstring(type) == L"BUTTON") style |= BS_NOTIFY;
     HWND control = CreateWindowExW(0, type, text, WS_CHILD | WS_VISIBLE | style,
-        0, 0, 1, 1, mainWindow, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+        0, 0, 1, 1, mainWindow, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), appModule, nullptr);
     SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(bodyFont), TRUE);
     controls.push_back(control);
     return control;
@@ -394,7 +394,7 @@ void UninitializeRuntime() {
 #endif
 }
 int WINAPI wWinMain(HINSTANCE appInstance,HINSTANCE,PWSTR,int show) {
-    instance=appInstance;
+    appModule=appInstance;
 #ifdef NUMPAD9_MSIX
     struct MutexHandle { HANDLE value; ~MutexHandle() { if (value) CloseHandle(value); } };
     MutexHandle singleInstance{CreateMutexW(nullptr, FALSE, L"Local\\Numpad9.StoreHost")};
@@ -405,7 +405,7 @@ int WINAPI wWinMain(HINSTANCE appInstance,HINSTANCE,PWSTR,int show) {
         }
         return 0;
     }
-    numpad9::ime::gModule = instance;
+    numpad9::ime::gModule = appModule;
     HRESULT comResult=RoInitialize(RO_INIT_SINGLETHREADED);
 #else
     HRESULT comResult=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
@@ -414,7 +414,7 @@ int WINAPI wWinMain(HINSTANCE appInstance,HINSTANCE,PWSTR,int show) {
     INITCOMMONCONTROLSEX common{sizeof(common),ICC_STANDARD_CLASSES}; InitCommonControlsEx(&common);
     HMODULE rich=LoadLibraryW(L"Msftedit.dll");
     if(!rich) {UninitializeRuntime(); return 2;}
-    WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc); wc.lpfnWndProc=WindowProc; wc.hInstance=instance;
+    WNDCLASSEXW wc{}; wc.cbSize=sizeof(wc); wc.lpfnWndProc=WindowProc; wc.hInstance=appModule;
 #ifdef NUMPAD9_MSIX
     wc.lpszClassName=L"Numpad9.StoreHost";
 #else
@@ -422,7 +422,7 @@ int WINAPI wWinMain(HINSTANCE appInstance,HINSTANCE,PWSTR,int show) {
 #endif
     wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
     wc.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_WINDOW+1);
-    wc.hIcon=LoadIconW(instance,MAKEINTRESOURCEW(1)); wc.hIconSm=wc.hIcon;
+    wc.hIcon=LoadIconW(appModule,MAKEINTRESOURCEW(1)); wc.hIconSm=wc.hIcon;
     if(!RegisterClassExW(&wc)) {FreeLibrary(rich); UninitializeRuntime(); return 3;}
     UINT initialDpi=GetDpiForSystem(); dpi=initialDpi;
     RECT desktop{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&desktop,0);
@@ -430,7 +430,7 @@ int WINAPI wWinMain(HINSTANCE appInstance,HINSTANCE,PWSTR,int show) {
     if(width>desktop.right-desktop.left) width=desktop.right-desktop.left;
     if(height>desktop.bottom-desktop.top) height=desktop.bottom-desktop.top;
     HWND window=CreateWindowExW(0,wc.lpszClassName,L"Numpad9",WS_OVERLAPPEDWINDOW|WS_VSCROLL,
-        CW_USEDEFAULT,CW_USEDEFAULT,width,height,nullptr,nullptr,instance,nullptr);
+        CW_USEDEFAULT,CW_USEDEFAULT,width,height,nullptr,nullptr,appModule,nullptr);
     if(!window) {FreeLibrary(rich); UninitializeRuntime(); return 4;}
     ShowWindow(window,show); UpdateWindow(window);
     MSG message{};

@@ -105,65 +105,12 @@ try {
     }
     if ($hostProcess.MainWindowHandle -eq [IntPtr]::Zero) { throw 'Host did not create a real native window.' }
     if (-not $SkipScreenshot) {
-        Add-Type -AssemblyName System.Drawing
-        $drawingReferences = @([Drawing.Bitmap].Assembly.Location, [Drawing.Size].Assembly.Location)
-        # PowerShell/.NET 9+ forwards drawing interfaces to these assemblies.
-        $drawingReferences += @(Get-ChildItem (Join-Path (Split-Path ([Drawing.Bitmap].Assembly.Location) -Parent) 'System.Private.Windows.*.dll') | ForEach-Object { $_.FullName })
-        Add-Type -ReferencedAssemblies $drawingReferences @'
-using System;
-using System.Drawing;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
-public static class Numpad9WindowCapture {
-  [DllImport("kernel32.dll")] private static extern void Sleep(uint milliseconds);
-  [StructLayout(LayoutKind.Sequential)] private struct Rect { public int Left, Top, Right, Bottom; }
-  [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
-  [DllImport("user32.dll", SetLastError=true)] private static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int width, int height, uint flags);
-  [DllImport("user32.dll", SetLastError=true)] private static extern bool GetWindowRect(IntPtr h, out Rect rect);
-  [DllImport("user32.dll", SetLastError=true)] private static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
-  [DllImport("user32.dll")] private static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr region, uint flags);
-  [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr h, uint message, IntPtr wp, IntPtr lp);
-  public static int[] Capture(IntPtr window, string path) {
-    // Keep resize, measurement and rendering on this one DPI-aware thread.
-    IntPtr previous = SetThreadDpiAwarenessContext(new IntPtr(-4)); // PER_MONITOR_AWARE_V2
-    if (previous == IntPtr.Zero) throw new InvalidOperationException("Window API failed with Win32 error " + Marshal.GetLastWin32Error());
-    try {
-      if (!SetWindowPos(window, IntPtr.Zero, 0, 0, 1366, 900, 0x0040))
-        throw new InvalidOperationException("Window API failed with Win32 error " + Marshal.GetLastWin32Error());
-      SendMessage(window, 0x0111, new IntPtr(106), IntPtr.Zero); // Actual app English control.
-      RedrawWindow(window, IntPtr.Zero, IntPtr.Zero, 0x0581);
-      Sleep(500);
-      Rect rect;
-      if (!GetWindowRect(window, out rect)) throw new InvalidOperationException("Window API failed with Win32 error " + Marshal.GetLastWin32Error());
-      int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-      if (width != 1366 || height != 900)
-        throw new InvalidOperationException("Requested physical window 1366x900, observed " + width + "x" + height +
-          " at rectangle (" + rect.Left + "," + rect.Top + ")-(" + rect.Right + "," + rect.Bottom + ").");
-      using (Bitmap bitmap = new Bitmap(width, height)) {
-        using (Graphics graphics = Graphics.FromImage(bitmap)) {
-          IntPtr dc = graphics.GetHdc();
-          try {
-            if (!PrintWindow(window, dc, 2)) throw new InvalidOperationException("Window API failed with Win32 error " + Marshal.GetLastWin32Error());
-          } finally { graphics.ReleaseHdc(dc); }
-        }
-        int first = bitmap.GetPixel(width / 2, height / 2).ToArgb();
-        bool different = false;
-        for (int x = 25; x < width; x += 35)
-          for (int y = 25; y < height; y += 25)
-            if (bitmap.GetPixel(x, y).ToArgb() != first) different = true;
-        if (!different) throw new InvalidOperationException("Captured window appears blank.");
-        bitmap.Save(path, ImageFormat.Png);
-      }
-      return new int[] { width, height };
-    } finally { SetThreadDpiAwarenessContext(previous); }
-  }
-}
-'@
+        . (Join-Path $PSScriptRoot 'Capture-Window.ps1')
         $screenshots = Join-Path $root 'artifacts/screenshots'
         New-Item -ItemType Directory -Force -Path $screenshots | Out-Null
         $screenshot = Join-Path $screenshots 'main-window.png'
-        $dimensions = [Numpad9WindowCapture]::Capture($hostProcess.MainWindowHandle, $screenshot)
-        Write-Host "Captured the actual native window at $($dimensions[0]) x $($dimensions[1]) physical pixels."
+        $capture = Save-Numpad9WindowScreenshot -Window $hostProcess.MainWindowHandle -Path $screenshot -ToggleLanguage
+        Write-Host "Captured the actual native window at $($capture.width) x $($capture.height) physical pixels."
     }
     foreach ($pair in @(@('x64', $dir64), @('x86', $dir32))) {
         $arch = $pair[0]
