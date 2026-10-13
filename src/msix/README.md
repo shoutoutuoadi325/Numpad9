@@ -29,9 +29,14 @@ has actually activated it. It can remain `WaitingForActivation`.
 
 Candidate invocations supply both their index and `Snapshot.revision` to
 `SelectCandidate`, so clicks from an old context cannot commit into a new one.
+`Snapshot.anchorValid` tells the host whether a system caret/textbox rectangle
+was available; otherwise the host chooses a monitor-work-area fallback instead
+of reusing geometry from an older focused control.
 Keyboard support includes the phone positional layout with Num Lock both on
 and off, ordinary keys passing through, English/Pinyin switching, candidate
 selection and paging, Backspace, cancellation, punctuation and confirmation.
+Accepted keydowns and their keyups are paired by scan code and the extended
+key bit. Tracking is cleared when focus or protected input changes.
 
 Edits use the key event's own `TextEditSession`, system compositions and explicit
 `SubmitPayload`. The engine transaction advances only when the system accepts

@@ -73,7 +73,14 @@ void InputChanged(const numpad9::msix::Snapshot& snapshot) {
         candidateWindow.SetAction([revision = snapshot.revision](size_t index, bool commit) {
             if (inputService && !shuttingDown) inputService->SelectCandidate(index, revision, commit);
         });
-        candidateWindow.Update(snapshot.anchor, nullptr, snapshot.mode, snapshot.digits,
+        RECT anchor = snapshot.anchor;
+        if (!snapshot.anchorValid) {
+            MONITORINFO monitor{}; monitor.cbSize = sizeof(monitor);
+            GetMonitorInfoW(MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY), &monitor);
+            anchor = {monitor.rcWork.left + 24, monitor.rcWork.top + 24,
+                      monitor.rcWork.left + 24, monitor.rcWork.top + 24};
+        }
+        candidateWindow.Update(anchor, nullptr, snapshot.mode, snapshot.digits,
                                snapshot.candidates, snapshot.selected, true);
     } else candidateWindow.Hide();
     PostMessageW(mainWindow, kInputChanged, 0, 0);

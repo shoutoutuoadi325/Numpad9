@@ -31,6 +31,7 @@ struct Snapshot {
     std::vector<Candidate> candidates;
     std::size_t selected = 0;
     RECT anchor{}; // Screen coordinates, supplied by the system input service.
+    bool anchorValid = false; // If false, host chooses a monitor-work-area fallback.
     unsigned long long revision = 0; // Reject stale popup invocations.
 };
 

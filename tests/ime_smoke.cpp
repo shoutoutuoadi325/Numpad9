@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <msctf.h>
 #include <richedit.h>
+#include <shellapi.h>
 #include <iostream>
 #include <cwchar>
 #include "identity.h"
@@ -32,6 +33,12 @@ void Pump(DWORD milliseconds) {
         if (GetTickCount64() >= deadline) break;
         MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     } while (true);
+}
+void LogGuid(const char* label, const GUID& value) {
+    wchar_t text[40]{}; StringFromGUID2(value, text, 40);
+    std::cerr << label << '=';
+    for (wchar_t character : text) { if (!character) break; std::cerr << static_cast<char>(character); }
+    std::cerr << '\n';
 }
 
 int RegisteredSmoke() {
@@ -103,9 +110,24 @@ int RegisteredSmoke() {
             } while (GetTickCount64() < deadline);
             if (!active) {
                 TF_INPUTPROCESSORPROFILE selected{}; CLSID foreground = CLSID_NULL;
+                Com<ITfDocumentMgr> document; Com<ITfContext> context; Com<ITfThreadMgrEx> extended;
+                const HRESULT profileResult = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &selected);
+                const HRESULT foregroundResult = keys->GetForeground(&foreground);
+                const HRESULT focusResult = thread->GetFocus(&document.p);
+                const HRESULT contextResult = document.p ? document->GetTop(&context.p) : E_UNEXPECTED;
+                DWORD flags = 0;
+                const HRESULT flagsResult = thread->QueryInterface(IID_ITfThreadMgrEx, extended.out());
+                if (SUCCEEDED(flagsResult)) extended->GetActiveFlags(&flags);
                 std::cerr << "Installed profile did not become a foreground key service with an edit context; "
-                    << "active=0x" << std::hex << manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &selected)
-                    << ", foreground=0x" << keys->GetForeground(&foreground) << '\n'; result = 12;
+                    << "active=0x" << std::hex << profileResult << ", foreground=0x" << foregroundResult
+                    << ", focus=0x" << focusResult << ", context=0x" << contextResult
+                    << ", activeFlags=0x" << flags << ", client=0x" << client
+                    << ", editStyle=0x" << SendMessageW(edit, EM_GETEDITSTYLE, 0, 0)
+                    << ", focusedEdit=" << (GetFocus() == edit)
+                    << ", foregroundWindow=" << (GetForegroundWindow() == window) << '\n';
+                LogGuid("selectedCLSID", selected.clsid); LogGuid("selectedProfile", selected.guidProfile);
+                LogGuid("foregroundCLSID", foreground);
+                result = 12;
             }
         }
     }
@@ -130,7 +152,7 @@ int RegisteredSmoke() {
 }
 }
 
-int wmain(int argc, wchar_t** argv) {
+int RunSmoke(int argc, wchar_t** argv) {
     const bool registered = argc == 3 && std::wcscmp(argv[2], L"--registered") == 0;
     if (argc != 2 && !registered) { std::cerr << "Expected absolute IME DLL path [--registered]\n"; return 1; }
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
@@ -173,4 +195,14 @@ int wmain(int argc, wchar_t** argv) {
     CoUninitialize();
     if (!result) std::cout << "TSF COM factory, invalid-state handling and unload checks passed.\n";
     return result;
+}
+
+// A real GUI host matches the desktop applications this input service targets.
+// Keeping a console subsystem here can select TSF's console activation mode.
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return 1;
+    const int result = RunSmoke(argc, argv);
+    LocalFree(argv); return result;
 }

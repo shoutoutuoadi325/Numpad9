@@ -1,5 +1,6 @@
 #include "input_service.h"
 #include <algorithm>
+#include <array>
 #include <appmodel.h>
 #include <cmath>
 #include <mutex>
@@ -19,6 +20,15 @@ namespace numpad9::msix {
 namespace text = winrt::Windows::UI::Input::Preview::Text;
 using winrt::Windows::System::VirtualKey;
 using winrt::Windows::UI::Text::Core::CoreTextRange;
+namespace {
+bool BoundsValue(const winrt::Windows::Foundation::Rect& bounds,
+                 winrt::Windows::Foundation::Rect& value) { value = bounds; return true; }
+bool BoundsValue(const winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>& bounds,
+                 winrt::Windows::Foundation::Rect& value) {
+    if (!bounds) return false;
+    value = bounds.Value(); return true;
+}
+}
 #endif
 
 struct InputService::Impl : std::enable_shared_from_this<Impl> {
@@ -32,6 +42,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     std::uint32_t textBox = 0;
     bool busy = false;
     bool running = false;
+    std::array<bool, 512> consumed{};
 #ifdef NUMPAD9_HAS_PREVIEW_TEXT
     text::TextInputService service{nullptr};
     text::KeyboardInputProcessor processor{nullptr};
@@ -49,6 +60,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     void Clear() {
         engine.Clear(); original.clear(); textBox = 0;
         snapshot.digits.clear(); snapshot.candidates.clear(); snapshot.selected = 0;
+        snapshot.anchor = {}; snapshot.anchorValid = false;
     }
     void Publish() noexcept {
         // UI callbacks cannot propagate exceptions into the system input server.
@@ -93,15 +105,22 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             snapshot.state = snapshot.active ? State::Ready : State::WaitingForActivation;
             snapshot.message = snapshot.active ? L"Windows 输入服务已激活。" :
                 L"等待 Windows 激活已批准的输入配置。";
-            if (!snapshot.hasFocus) Clear();
+            if (!snapshot.hasFocus) { Clear(); consumed.fill(false); }
+            snapshot.anchor = {}; snapshot.anchorValid = false;
             if (snapshot.hasFocus) {
-                const auto bounds = processor.SelectionBounds();
-                if (std::isfinite(bounds.X) && std::isfinite(bounds.Y) &&
+                winrt::Windows::Foundation::Rect bounds{};
+                bool found = false;
+                // Geometry is optional. A missing caret rectangle must not
+                // turn a usable input service into a failed service.
+                try { found = BoundsValue(processor.SelectionBounds(), bounds); } catch (...) {}
+                if (!found) try { found = BoundsValue(processor.FocusedTextBoxBounds(), bounds); } catch (...) {}
+                if (found && std::isfinite(bounds.X) && std::isfinite(bounds.Y) &&
                     std::isfinite(bounds.Width) && std::isfinite(bounds.Height) &&
                     std::abs(bounds.X) < 1000000 && std::abs(bounds.Y) < 1000000 &&
                     bounds.Width >= 0 && bounds.Width < 1000000 && bounds.Height >= 0 && bounds.Height < 1000000) {
                     snapshot.anchor = {static_cast<LONG>(bounds.X), static_cast<LONG>(bounds.Y),
                         static_cast<LONG>(bounds.X + bounds.Width), static_cast<LONG>(bounds.Y + bounds.Height)};
+                    snapshot.anchorValid = true;
                 }
             }
             Publish();
@@ -188,22 +207,30 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     }
     void Key(const text::KeyEventReceivedEventArgs& args) noexcept {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        if (!OnThread() || !running || busy || !Allowed()) return;
+        if (!OnThread() || !running || busy) return;
         struct Busy { bool& value; explicit Busy(bool& v) : value(v) { value = true; } ~Busy() { value = false; } } guard(busy);
         try {
             const auto status = args.KeyStatus();
-            if (status.IsKeyReleased) return;
             const auto key = args.VirtualKey();
             const auto vk = static_cast<unsigned int>(key);
+            // Track only keydown events accepted by this processor. Do not
+            // leave orphan key-up events in the target application.
+            const unsigned int code = status.ScanCode ? status.ScanCode : vk;
+            const auto slot = (code & 0xffU) | (status.IsExtendedKey ? 0x100U : 0U);
+            if (status.IsKeyReleased) {
+                if (consumed[slot]) { consumed[slot] = false; args.Handled(true); }
+                return;
+            }
+            if (!Allowed()) return;
             const bool ctrl = args.IsKeyPressed(VirtualKey::Control);
             const bool alt = args.IsKeyPressed(VirtualKey::Menu) || args.IsKeyPressed(VirtualKey::LeftWindows) ||
                 args.IsKeyPressed(VirtualKey::RightWindows);
             const bool shift = args.IsKeyPressed(VirtualKey::Shift);
             if (alt) return;
             const auto session = args.EditSession();
-            if (!session) return;
+            if (!session || session.TextBoxId().Value != processor.FocusedTextBoxId().Value) return;
             if ((ctrl && shift && vk == 'E') || (!ctrl && !shift && vk == VK_DIVIDE)) {
-                if (Toggle(session)) args.Handled(true);
+                if (Toggle(session)) { args.Handled(true); consumed[slot] = true; }
                 return;
             }
             if (ctrl || shift) return;
@@ -244,7 +271,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
                 vk != VK_CAPITAL && vk != VK_NUMLOCK) {
                 Finish(session, false); // Commit owned preedit, then pass the ordinary key through.
             }
-            if (handled) args.Handled(true);
+            if (handled) { args.Handled(true); consumed[slot] = true; }
             Refresh();
         } catch (const winrt::hresult_error& error) {
             Fail(State::Failed, L"输入服务拒绝了编辑操作；按键继续交给当前应用。", error.code());
@@ -265,6 +292,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     void Stop() noexcept {
         std::lock_guard<std::recursive_mutex> lock(mutex);
         running = false;
+        consumed.fill(false);
 #ifdef NUMPAD9_HAS_PREVIEW_TEXT
         try {
             if (OnThread() && processor && Allowed() && !engine.Digits().empty()) {
@@ -316,7 +344,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             running = true;
             activated = processor.Activated(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Refresh(); }));
             deactivated = processor.Deactivated(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Clear(); self.Refresh(); }));
-            entered = processor.FocusEntered(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Clear(); self.Refresh(); }));
+            entered = processor.FocusEntered(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Clear(); self.consumed.fill(false); self.Refresh(); }));
             removed = processor.FocusRemoved(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Clear(); self.Refresh(); }));
             terminated = processor.CompositionTerminated(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Clear(); self.Refresh(); }));
             infoChanged = processor.TextBoxInfoChanged(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Refresh(); }));
