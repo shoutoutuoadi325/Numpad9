@@ -39,7 +39,7 @@ Typing is processed locally and is not uploaded. There are no advertisements or 
 ## Assets and account fields still required
 
 - Real developer account, legal publisher, contact/support, category, markets/pricing, age questionnaire, license terms and versioned source URL. A reasonable proposed category is Utilities & tools; choose the available matching Partner Center value.
-- A publicly reachable privacy policy with the completed publisher/contact section. Declare access to personal information because the input method processes typed text even though it does not transmit it.
+- Actual privacy-policy text in the EXE product Properties field, or a publicly reachable privacy-policy URL. Use real support information and remove template placeholders; the installed policy also identifies the legal app publisher. Declare access to personal information because the input method processes typed text even though it does not transmit it.
 - At least one **real Windows application screenshot**; prepare four: setup/help and layout, Chinese candidates in an actual x64 text app, English input, Windows input-method selection. Capture from the running application, including through Windows automation; redact personal information.
 - Store box art (1:1) and any desired poster art, exported from the app's original logo to the current Partner Center dimensions.
 - EXE package architecture: x64 only. Languages: Chinese and English application interface. Minimum OS: Windows 10 1809. Installation parameters are in README.md.

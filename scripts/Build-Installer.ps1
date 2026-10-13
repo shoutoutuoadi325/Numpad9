@@ -38,8 +38,8 @@ New-Item -ItemType Directory -Force -Path $metadata | Out-Null
 $policy = Get-Content -Raw -LiteralPath (Join-Path $root 'docs/store/privacy-policy.md')
 $policy = $policy.Replace('- 真实发行人 / Legal publisher: **REQUIRED BEFORE PUBLICATION**', "- 真实发行人 / Legal publisher: $Publisher")
 $policy = $policy.Replace('- 隐私及支持联系方式 / Privacy and support contact: **REQUIRED BEFORE PUBLICATION**', "- 隐私及支持联系方式 / Privacy and support contact: $Contact")
-$policy = $policy.Replace('This file is a publication draft until those two fields are completed. The release validator requires a real hosted policy URL and contact; publishing this unresolved draft is not acceptable.', 'Publisher and support details above apply to this installer build.')
-$policy = $policy.Replace('发布前必须在本文末尾填写真实发行人和联系方式，并将完整内容发布到可公开访问的 HTTPS 网页。以下描述针对本仓库的离线版本；功能改变时需要重新审核和更新。', '以下描述针对本版本的离线功能；功能改变时需要重新审核和更新。')
+$policy = $policy.Replace('This installed-policy template is a publication draft until those two fields are completed. Partner Center EXE properties accept privacy-policy text directly; a hosted HTTPS policy is an alternative. Publishing this unresolved draft is not acceptable.', 'Publisher and support details above apply to this installer build.')
+$policy = $policy.Replace('这是安装包内政策的草稿，发布前必须在本文末尾填写真实发行人和联系方式。Partner Center 的 EXE 产品属性可直接填写完整隐私政策文本；也可提供公开 HTTPS 政策网页。以下描述针对本仓库的离线版本；功能改变时需要重新审核和更新。', '以下描述针对本版本的离线功能；功能改变时需要重新审核和更新。')
 $policy | Set-Content -LiteralPath (Join-Path $metadata 'privacy-policy.md') -Encoding UTF8
 @("Numpad9 $Version", 'Application license: GNU GPL version 3.', "Full corresponding source for this version: $SourceUrl", 'Dictionary attribution: see NOTICE.txt and licenses directory.', 'No additional EULA restricts the freedoms granted by these licenses.') | Set-Content -LiteralPath (Join-Path $metadata 'SOURCE.txt') -Encoding UTF8
 $argsList = @('/Qp', "/DAppVersion=$Version", "/DPublisher=$Publisher", "/DContact=$Contact", "/DSourceUrl=$SourceUrl")

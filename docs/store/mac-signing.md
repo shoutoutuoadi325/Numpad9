@@ -70,6 +70,6 @@ Inno 在 `artifacts/signed-uninstaller` 中生成唯一名称的未签名缓存�
 
 生成 `Numpad9-0.1.0-x64-EXTERNAL-SIGNING-PENDING.exe`。其中卸载程序应已签名，外层 EXE 仍待签名。若 Inno 生成新的缓存文件，表示 compiler/version/icon/元数据影响了卸载程序内容：必须重新签新的缓存，不能跳过签名或重用不同内容的缓存。该跨机器流程的首次缓存生成需要配合 Inno 提示，尚未自动化成无人值守任务。
 
-5. 将外层 EXE 下载到 Mac，再用相同 helper 签到新目录。可把签名后文件重命名为版本化候选名；重命名不改变内容。上传到最终不可变 HTTPS 地址后，在 Windows 运行 `Validate-Release.ps1`，自动核对所有 payload、安装器、实际安装出的卸载程序、发行人、版本、下载哈希、隐私及源码地址。人工实机 QA 不作为本项目的强制门槛。
+5. 将外层 EXE 下载到 Mac，再用相同 helper 签到新目录。可把签名后文件重命名为版本化候选名；重命名不改变内容。上传到最终不可变 HTTPS 地址后，在 Windows 运行 `Validate-Release.ps1`，自动核对所有 payload、安装器、实际安装出的卸载程序、发行人、版本、下载哈希、实际提交政策文本（`-PolicyTextPath`）或政策网址，以及源码地址。人工实机 QA 不作为本项目的强制门槛。
 
 Windows CI 之间可以传递已签 payload、已签卸载缓存和公开证书；不需要把私钥、PFX、PIN 或云服务登录凭据上传到仓库。CI 输出都保留候选/测试标识，直到外层签名和 Windows 发布检查完成。

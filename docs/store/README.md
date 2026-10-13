@@ -31,7 +31,7 @@ $env:NUMPAD9_TIMESTAMP_URL = '<证书供应商 RFC3161 时间戳服务 URL>'
 
 也可以在 Mac 上使用供应商的硬件/云密钥与 osslsigncode 签名，见 [mac-signing.md](mac-signing.md) 和 `scripts/Sign-Mac.py`。该路线先签 payload 和精确 Inno 卸载缓存，再重编译并签外层安装器；Windows CI 无需保存私钥。
 
-安装包内的隐私政策会填入提供的真实发行人和联系方式，并包含 `SOURCE.txt` 的对应源码地址。将同一份已填写政策内容发布到你的公开 HTTPS 网页。生成完整对应源码归档（包括原始词典、重建工具、原生源码和构建脚本）：
+安装包内的隐私政策会填入提供的真实发行人和联系方式，并包含 `SOURCE.txt` 的对应源码地址。Partner Center 的 EXE 产品属性提供隐私政策文本字段，可以直接填写实际政策全文；公开 HTTPS 政策网页是另一种提交方式，并非文本方式的前置要求。用于 Store 的政策文本应准确说明输入在本机处理、不会上传以及实际支持渠道，不能包含模板占位符。安装器中的发行人身份仍必须真实填写。生成完整对应源码归档（包括原始词典、重建工具、原生源码和构建脚本）：
 
 ```powershell
 ./scripts/Build-SourceArchive.ps1
@@ -73,14 +73,14 @@ Program Files (x86)\Numpad9\versions\0.1.0\lexicon.tsv
 
 1. 完成代码审核、Windows x64/x86 自动构建、核心测试与 DLL COM 生命周期测试；保留自动检查输出。
 2. [qa-checklist.md](qa-checklist.md) 和 [qa-report.template.json](qa-report.template.json) 是可选的内部参考。人工实机测试不是本次发布的要求；若附上报告，只填写实际执行的检查，不将未执行项目标记通过。
-3. 真实发行人、支持联系方式、隐私政策网址、完整对应源码网址、版本化且不可替换的 HTTPS 安装包网址必须由开发者提供。
+3. 真实发行人、支持联系方式、实际提交的隐私政策文本或公开政策网址、完整对应源码网址、版本化且不可替换的 HTTPS 安装包网址必须由开发者提供。
 4. 签名证书链的根指纹需独立核对 Microsoft Trusted Root Program，不允许用本机添加的开发信任根冒充公有 CA。
 5. 运行发布检查。`InstalledRoot` 指在 Windows 上从该候选包实际安装得到的目录，必须包含签名卸载程序。
 
 ```powershell
 ./scripts/Validate-Release.ps1 -Installer '<已签名候选 EXE>' `
     -InstalledRoot "$env:ProgramFiles\Numpad9" -Publisher '<应用真实发行人>' `
-    -Contact '<真实联系信息>' -PrivacyUrl '<隐私政策 HTTPS URL>' `
+    -Contact '<真实联系信息>' -PolicyTextPath '<实际提交到 Partner Center 的 UTF-8 政策文件>' `
     -InstallerUrl '<含 0.1.0 的不可变 EXE HTTPS URL>' `
     -SourceUrl '<本版本完整对应源码 HTTPS URL>' `
     -TrustedProgramRootThumbprints '<已核对的公有 CA 根 SHA1 指纹>'
@@ -88,9 +88,11 @@ Program Files (x86)\Numpad9\versions\0.1.0\lexicon.tsv
 
 默认情况下签名证书主体的 SimpleName 应与应用发行人一致。如果使用 SignPath Foundation 等经授权的第三方签名流程，证书主体可能是基金会，而产品发行人仍是实际开发者。此时明确增加 `-CertificateSubjectName '<实际签名证书 SimpleName>'`；这不会放宽证书链、哈希、时间戳、发行元数据或任何其他检查，也不代表该签名计划一定接受本项目。
 
-检查会拒绝无效/缺失签名、无时间戳、自签名证书、发行人不匹配、错位数 DLL、缺失安装后的卸载程序。它还核对安装载荷与构建载荷、版本元数据、实际下载的安装器哈希和公开政策中的发行人/联系方式；源码 URL 至少需要能访问。安装验证可在 Windows CI/自动化环境完成。可选 `-QaReport` 不要求人工实机项目全部通过；若提供报告，会核对其版本与安装包哈希。网络或 CA 撤销检查失败时停止发布。此检查不替代 Microsoft 的安全与内容认证。
+隐私文本路线使用 `-PolicyTextPath`，检查文件非空、没有未填写的模板字段，并在报告中记录原文件 SHA256；发布前应核对文件全文与 Partner Center 保存的文本一致。若使用公开网页，改为 `-PrivacyUrl '<隐私政策 HTTPS URL>'`；提供两者时分别检查。隐私文本路线不要求另建网页，也不推断尚未确定的法律发行人身份。
 
-按照 [listing.md](listing.md) 准备中英文介绍、真实应用截图和 Store logo，完成 Partner Center 开发者账号、名称预留、年龄评级、市场及定价、隐私与产品声明。由于输入法会处理用户正在输入的文本，应如实声明访问个人信息，并提供公开可访问的隐私政策 URL；“没有上传”不等于“没有访问”。GPL-3.0 源码交付和词典第三方署名需与每个发布版本匹配。
+检查会拒绝无效/缺失签名、无时间戳、自签名证书、发行人不匹配、错位数 DLL、缺失安装后的卸载程序。它还核对安装载荷与构建载荷、版本元数据、实际下载的安装器哈希、提供的政策文本哈希或公开政策中的发行人/联系方式；源码 URL 至少需要能访问。安装验证可在 Windows CI/自动化环境完成。可选 `-QaReport` 不要求人工实机项目全部通过；若提供报告，会核对其版本与安装包哈希。网络或 CA 撤销检查失败时停止发布。此检查不替代 Microsoft 的安全与内容认证。
+
+按照 [listing.md](listing.md) 准备中英文介绍、真实应用截图和 Store logo，完成 Partner Center 开发者账号、名称预留、年龄评级、市场及定价、隐私与产品声明。由于输入法会处理用户正在输入的文本，应如实声明访问个人信息，并在 EXE 产品属性中提供完整隐私政策文本，或提供公开可访问的政策 URL；“没有上传”不等于“没有访问”。GPL-3.0 源码交付和词典第三方署名需与每个发布版本匹配。
 
 ## 官方依据（2026-10-13 核对）
 

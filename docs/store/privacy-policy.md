@@ -2,7 +2,7 @@
 
 适用版本 / Applies to: 0.1.0。政策日期 / Policy date: 2026-10-13。
 
-发布前必须在本文末尾填写真实发行人和联系方式，并将完整内容发布到可公开访问的 HTTPS 网页。以下描述针对本仓库的离线版本；功能改变时需要重新审核和更新。
+这是安装包内政策的草稿，发布前必须在本文末尾填写真实发行人和联系方式。Partner Center 的 EXE 产品属性可直接填写完整隐私政策文本；也可提供公开 HTTPS 政策网页。以下描述针对本仓库的离线版本；功能改变时需要重新审核和更新。
 
 ## 中文
 
@@ -33,4 +33,4 @@ You control activation and removal through Windows language and application sett
 - 真实发行人 / Legal publisher: **REQUIRED BEFORE PUBLICATION**
 - 隐私及支持联系方式 / Privacy and support contact: **REQUIRED BEFORE PUBLICATION**
 
-This file is a publication draft until those two fields are completed. The release validator requires a real hosted policy URL and contact; publishing this unresolved draft is not acceptable.
+This installed-policy template is a publication draft until those two fields are completed. Partner Center EXE properties accept privacy-policy text directly; a hosted HTTPS policy is an alternative. Publishing this unresolved draft is not acceptable.

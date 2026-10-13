@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory)][string]$Publisher,
     [string]$CertificateSubjectName,
     [Parameter(Mandatory)][string]$Contact,
-    [Parameter(Mandatory)][string]$PrivacyUrl,
+    [string]$PrivacyUrl,
+    [string]$PolicyTextPath,
     [Parameter(Mandatory)][string]$InstallerUrl,
     [Parameter(Mandatory)][string]$SourceUrl,
     [string]$QaReport,
@@ -20,8 +21,17 @@ $root = Split-Path $PSScriptRoot -Parent
 if (-not $CertificateSubjectName) { $CertificateSubjectName = $Publisher }
 if ($env:OS -ne 'Windows_NT') { throw 'Release validation must run on Windows.' }
 if (-not $Publisher -or -not $Contact -or $Publisher -match '(?i)placeholder|unsigned|development|example') { throw 'Real publisher and support contact are required.' }
-foreach ($url in @($PrivacyUrl, $InstallerUrl, $SourceUrl)) {
-    if ($url -notmatch '^https://' -or $url -match '(?i)example\.(com|org)|localhost|REPLACE|YOUR_') { throw 'Real HTTPS privacy, immutable installer, and corresponding-source URLs are required.' }
+if (-not $PrivacyUrl -and -not $PolicyTextPath) { throw 'Provide PrivacyUrl OR PolicyTextPath containing the actual privacy text submitted in Partner Center.' }
+foreach ($url in @($InstallerUrl, $SourceUrl) + @($PrivacyUrl | Where-Object { $_ })) {
+    if ($url -notmatch '^https://' -or $url -match '(?i)example\.(com|org)|localhost|REPLACE|YOUR_') { throw 'Installer/source URLs and any supplied privacy URL must be real HTTPS addresses.' }
+}
+$policyText = $null
+if ($PolicyTextPath) {
+    $policyFile = Get-Item -LiteralPath $PolicyTextPath
+    if ($policyFile.PSIsContainer) { throw 'PolicyTextPath must identify a text file.' }
+    $policyContent = Get-Content -Raw -Encoding UTF8 -LiteralPath $policyFile.FullName
+    if ([string]::IsNullOrWhiteSpace($policyContent) -or $policyContent -match '(?i)REQUIRED BEFORE PUBLICATION|REPLACE[_ ]?ME|YOUR_[A-Z_]+|<[^>]*(真实|填写|placeholder)[^>]*>') { throw 'Submitted policy text must be nonempty and have no unresolved placeholders.' }
+    $policyText = [ordered]@{ path = $policyFile.FullName; sha256 = (Get-FileHash -LiteralPath $policyFile.FullName -Algorithm SHA256).Hash; source = 'Partner Center privacy-policy text' }
 }
 if ($InstallerUrl -notmatch ([regex]::Escape($Version)) -or $InstallerUrl -notmatch '\.exe($|\?)') { throw 'Installer URL must be versioned and point to an EXE.' }
 if (-not $SignTool -or -not (Test-Path $SignTool)) { throw 'Set NUMPAD9_SIGNTOOL to Windows SDK signtool.exe.' }
@@ -69,15 +79,17 @@ $signatures = foreach ($file in $pe) {
 }
 $qa = $null
 $installerHash = (Get-FileHash $Installer -Algorithm SHA256).Hash
-if ((Get-Item $Installer).VersionInfo.CompanyName -ne $Publisher) { throw 'Installer Publisher metadata differs from signer.' }
+if ((Get-Item $Installer).VersionInfo.CompanyName -ne $Publisher) { throw 'Installer Publisher metadata differs from the application publisher.' }
 if ((Get-Item $Installer).VersionInfo.ProductVersion -ne $Version) { throw 'Installer product version mismatch.' }
-if ((Get-Item $uninstallers[0].FullName).VersionInfo.CompanyName -ne $Publisher) { throw 'Uninstaller Publisher metadata differs from signer.' }
+if ((Get-Item $uninstallers[0].FullName).VersionInfo.CompanyName -ne $Publisher) { throw 'Uninstaller Publisher metadata differs from the application publisher.' }
 $downloaded = [IO.Path]::GetTempFileName()
 try {
     Invoke-WebRequest -UseBasicParsing -Uri $InstallerUrl -OutFile $downloaded | Out-Null
     if ((Get-FileHash $downloaded -Algorithm SHA256).Hash -ne $installerHash) { throw 'Hosted installer is different from the tested signed package.' }
-    $policyPage = Invoke-WebRequest -UseBasicParsing -Uri $PrivacyUrl
-    if ($policyPage.Content -match 'REQUIRED BEFORE PUBLICATION' -or $policyPage.Content -notmatch [regex]::Escape($Publisher) -or $policyPage.Content -notmatch [regex]::Escape($Contact)) { throw 'Hosted policy must contain real publisher/contact and no unresolved placeholders.' }
+    if ($PrivacyUrl) {
+        $policyPage = Invoke-WebRequest -UseBasicParsing -Uri $PrivacyUrl
+        if ($policyPage.Content -match 'REQUIRED BEFORE PUBLICATION' -or $policyPage.Content -notmatch [regex]::Escape($Publisher) -or $policyPage.Content -notmatch [regex]::Escape($Contact)) { throw 'Hosted policy must contain real publisher/contact and no unresolved placeholders.' }
+    }
     Invoke-WebRequest -UseBasicParsing -Method Head -Uri $SourceUrl | Out-Null
 } finally { Remove-Item -LiteralPath $downloaded -Force }
 if ($QaReport) {
@@ -87,7 +99,7 @@ if ($QaReport) {
         if ($test.status -eq 'passed' -and -not $test.evidence) { throw 'Optional passing QA claims require actual evidence.' }
     }
 }
-$report = [ordered]@{ status = 'submission-candidate'; version = $Version; publisher = $Publisher; expectedCertificateSubjectName = $CertificateSubjectName; contact = $Contact; privacyUrl = $PrivacyUrl; installerUrl = $InstallerUrl; sourceUrl = $SourceUrl; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); files = @($signatures); qa = $qa; certification = 'Microsoft certification not yet performed' }
+$report = [ordered]@{ status = 'submission-candidate'; version = $Version; publisher = $Publisher; expectedCertificateSubjectName = $CertificateSubjectName; contact = $Contact; privacyUrl = $PrivacyUrl; policyText = $policyText; installerUrl = $InstallerUrl; sourceUrl = $SourceUrl; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); files = @($signatures); qa = $qa; certification = 'Microsoft certification not yet performed' }
 $reportFull = Join-Path $root $ReportPath
 New-Item -ItemType Directory -Force -Path (Split-Path $reportFull -Parent) | Out-Null
 $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $reportFull -Encoding UTF8
