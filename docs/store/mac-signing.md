@@ -53,7 +53,7 @@ python3 scripts/Sign-Mac.py \
 
 ```powershell
 & '<ISCC.exe>' /DExternalSigning=1 /DAppVersion=0.1.0 `
-    '/DPublisher=<真实证书发行人>' '/DContact=<真实联系信息>' `
+    '/DPublisher=<应用真实发行人>' '/DContact=<真实联系信息>' `
     '/DSourceUrl=<对应源码 HTTPS 地址>' packaging/Numpad9.iss
 ```
 
@@ -64,7 +64,7 @@ Inno 在 `artifacts/signed-uninstaller` 中生成唯一名称的未签名缓存�
 ```powershell
 ./scripts/Build-Installer.ps1 -ExternalSigning `
     -SignedUninstallerDirectory '<精确已签名缓存目录>' `
-    -Publisher '<真实证书发行人>' -Contact '<真实联系信息>' `
+    -Publisher '<应用真实发行人>' -Contact '<真实联系信息>' `
     -SourceUrl '<对应源码 HTTPS 地址>'
 ```
 

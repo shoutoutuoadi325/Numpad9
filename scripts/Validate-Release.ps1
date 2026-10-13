@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][string]$Installer,
     [Parameter(Mandatory)][string]$InstalledRoot,
     [Parameter(Mandatory)][string]$Publisher,
+    [string]$CertificateSubjectName,
     [Parameter(Mandatory)][string]$Contact,
     [Parameter(Mandatory)][string]$PrivacyUrl,
     [Parameter(Mandatory)][string]$InstallerUrl,
@@ -16,6 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = Split-Path $PSScriptRoot -Parent
+if (-not $CertificateSubjectName) { $CertificateSubjectName = $Publisher }
 if ($env:OS -ne 'Windows_NT') { throw 'Release validation must run on Windows.' }
 if (-not $Publisher -or -not $Contact -or $Publisher -match '(?i)placeholder|unsigned|development|example') { throw 'Real publisher and support contact are required.' }
 foreach ($url in @($PrivacyUrl, $InstallerUrl, $SourceUrl)) {
@@ -61,7 +63,7 @@ $signatures = foreach ($file in $pe) {
     if (-not $chain.Build($sig.SignerCertificate)) { throw "Certificate chain/revocation check failed: $($file.FullName)" }
     $rootThumbprint = $chain.ChainElements[$chain.ChainElements.Count - 1].Certificate.Thumbprint
     if ($TrustedProgramRootThumbprints -notcontains $rootThumbprint) { throw 'Signing root must match the independently verified Microsoft Trusted Root Program allowlist.' }
-    if ($sig.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ne $Publisher) { throw 'Publisher must match the actual signer certificate subject.' }
+    if ($sig.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ne $CertificateSubjectName) { throw 'Signature certificate subject does not match the explicitly expected signer.' }
     [ordered]@{ path = $file.FullName; sha256 = (Get-FileHash $file.FullName -Algorithm SHA256).Hash; signer = $sig.SignerCertificate.Subject; root = $rootThumbprint }
     $chain.Dispose()
 }
@@ -85,7 +87,7 @@ if ($QaReport) {
         if ($test.status -eq 'passed' -and -not $test.evidence) { throw 'Optional passing QA claims require actual evidence.' }
     }
 }
-$report = [ordered]@{ status = 'submission-candidate'; version = $Version; publisher = $Publisher; contact = $Contact; privacyUrl = $PrivacyUrl; installerUrl = $InstallerUrl; sourceUrl = $SourceUrl; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); files = @($signatures); qa = $qa; certification = 'Microsoft certification not yet performed' }
+$report = [ordered]@{ status = 'submission-candidate'; version = $Version; publisher = $Publisher; expectedCertificateSubjectName = $CertificateSubjectName; contact = $Contact; privacyUrl = $PrivacyUrl; installerUrl = $InstallerUrl; sourceUrl = $SourceUrl; checkedAtUtc = [DateTime]::UtcNow.ToString('o'); files = @($signatures); qa = $qa; certification = 'Microsoft certification not yet performed' }
 $reportFull = Join-Path $root $ReportPath
 New-Item -ItemType Directory -Force -Path (Split-Path $reportFull -Parent) | Out-Null
 $report | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $reportFull -Encoding UTF8

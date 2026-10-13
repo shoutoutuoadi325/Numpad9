@@ -1,10 +1,10 @@
 #include "accessibility.h"
 #include "com.h"
+#ifndef __MINGW32__
+#include <UIAutomation.h>
+#else
 #include <uiautomationcore.h>
 #include <uiautomationcoreapi.h>
-#ifndef __MINGW32__
-#include <uiautomationclient.h>
-#else
 // MinGW 14's client header references newer enums absent from its core header.
 // Use the SDK's stable numeric UIA identifiers without pulling in unused clients.
 constexpr int UIA_InvokePatternId = 10000;

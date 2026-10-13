@@ -23,7 +23,7 @@ Windows 构建机需要 Visual Studio 2022 的“使用 C++ 的桌面开发”�
 $env:NUMPAD9_SIGNTOOL = '<Windows SDK signtool.exe 绝对路径>'
 $env:NUMPAD9_CERT_THUMBPRINT = '<你的 CA 代码签名证书 SHA1 指纹>'
 $env:NUMPAD9_TIMESTAMP_URL = '<证书供应商 RFC3161 时间戳服务 URL>'
-./scripts/Build-Installer.ps1 -Publisher '<证书主体的真实发行人名称>' `
+./scripts/Build-Installer.ps1 -Publisher '<应用的真实发行人名称>' `
     -Contact '<真实支持联系方式>' -SourceUrl '<本版本完整对应源码的 HTTPS 地址>'
 ```
 
@@ -79,12 +79,14 @@ Program Files (x86)\Numpad9\versions\0.1.0\lexicon.tsv
 
 ```powershell
 ./scripts/Validate-Release.ps1 -Installer '<已签名候选 EXE>' `
-    -InstalledRoot "$env:ProgramFiles\Numpad9" -Publisher '<实际证书发行人>' `
+    -InstalledRoot "$env:ProgramFiles\Numpad9" -Publisher '<应用真实发行人>' `
     -Contact '<真实联系信息>' -PrivacyUrl '<隐私政策 HTTPS URL>' `
     -InstallerUrl '<含 0.1.0 的不可变 EXE HTTPS URL>' `
     -SourceUrl '<本版本完整对应源码 HTTPS URL>' `
     -TrustedProgramRootThumbprints '<已核对的公有 CA 根 SHA1 指纹>'
 ```
+
+默认情况下签名证书主体的 SimpleName 应与应用发行人一致。如果使用 SignPath Foundation 等经授权的第三方签名流程，证书主体可能是基金会，而产品发行人仍是实际开发者。此时明确增加 `-CertificateSubjectName '<实际签名证书 SimpleName>'`；这不会放宽证书链、哈希、时间戳、发行元数据或任何其他检查，也不代表该签名计划一定接受本项目。
 
 检查会拒绝无效/缺失签名、无时间戳、自签名证书、发行人不匹配、错位数 DLL、缺失安装后的卸载程序。它还核对安装载荷与构建载荷、版本元数据、实际下载的安装器哈希和公开政策中的发行人/联系方式；源码 URL 至少需要能访问。安装验证可在 Windows CI/自动化环境完成。可选 `-QaReport` 不要求人工实机项目全部通过；若提供报告，会核对其版本与安装包哈希。网络或 CA 撤销检查失败时停止发布。此检查不替代 Microsoft 的安全与内容认证。
 
