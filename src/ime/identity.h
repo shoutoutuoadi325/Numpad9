@@ -1,0 +1,14 @@
+#pragma once
+#include <windows.h>
+
+namespace numpad9::ime {
+// Stable across versions and x86/x64 registrations. Never use these for another TIP.
+inline constexpr GUID kClsid = {0xe03fe2c4, 0x24b9, 0x4c4e, {0xb6, 0x05, 0x88, 0x71, 0x7e, 0x6a, 0x4d, 0x49}};
+inline constexpr GUID kProfile = {0x859113af, 0xd94c, 0x4fd7, {0x88, 0x70, 0x9b, 0x1f, 0x60, 0x7e, 0x68, 0x96}};
+inline constexpr GUID kDisplayAttribute = {0x1a7330f2, 0x92bd, 0x49ec, {0xb9, 0xef, 0xa8, 0x15, 0xb9, 0x17, 0x33, 0x28}};
+inline constexpr GUID kCandidateUi = {0x7e22f391, 0xa27b, 0x4268, {0x90, 0x7c, 0x4d, 0x10, 0xe1, 0x58, 0xcb, 0x92}};
+inline constexpr LANGID kLanguage = 0x0804;
+inline constexpr wchar_t kName[] = L"Numpad9 九键输入法";
+inline constexpr wchar_t kClsidString[] = L"{E03FE2C4-24B9-4C4E-B605-88717E6A4D49}";
+inline constexpr wchar_t kProfileString[] = L"{859113AF-D94C-4FD7-8870-9B1F607E6896}";
+}

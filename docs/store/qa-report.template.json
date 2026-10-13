@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "installerSha256": "REPLACE_WITH_EXACT_SIGNED_INSTALLER_SHA256",
+  "tester": "",
+  "testedAt": "",
+  "systems": [],
+  "tests": [
+    { "id": "win10-x64", "status": "not-run", "evidence": "" },
+    { "id": "win11-x64", "status": "not-run", "evidence": "" },
+    { "id": "standard-user-uac", "status": "not-run", "evidence": "" },
+    { "id": "silent-offline-install", "status": "not-run", "evidence": "" },
+    { "id": "x64-tsf", "status": "not-run", "evidence": "" },
+    { "id": "x86-tsf", "status": "not-run", "evidence": "" },
+    { "id": "appcontainer", "status": "not-run", "evidence": "" },
+    { "id": "password-scope", "status": "not-run", "evidence": "" },
+    { "id": "numlock-layout", "status": "not-run", "evidence": "" },
+    { "id": "composition-lifecycle", "status": "not-run", "evidence": "" },
+    { "id": "upgrade-loaded-ime", "status": "not-run", "evidence": "" },
+    { "id": "registration-rollback", "status": "not-run", "evidence": "" },
+    { "id": "uninstall-loaded-ime", "status": "not-run", "evidence": "" },
+    { "id": "defender-scan", "status": "not-run", "evidence": "" },
+    { "id": "accessibility-dpi", "status": "not-run", "evidence": "" },
+    { "id": "store-assets", "status": "not-run", "evidence": "" }
+  ]
+}

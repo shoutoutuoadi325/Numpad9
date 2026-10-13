@@ -1,0 +1,43 @@
+name: Windows candidate build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test native x64 and x86
+        shell: pwsh
+        run: ./scripts/Build-Windows.ps1
+      - name: Locate Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw 'Runner needs Inno Setup 6.3 or newer.' }
+      - name: Build unsigned testing installer
+        shell: pwsh
+        run: ./scripts/Build-Installer.ps1 -UnsignedDevelopment
+      - name: Automated installer and native window smoke
+        shell: pwsh
+        run: ./scripts/Test-Installer.ps1
+      - name: Archive corresponding source
+        shell: pwsh
+        run: ./scripts/Build-SourceArchive.ps1
+      - name: Upload unsigned testing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-UNSIGNED-TESTING-Windows-x64
+          path: |
+            artifacts/*UNSIGNED-TESTING.exe
+            artifacts/*-source.zip
+            artifacts/installer-smoke/
+            artifacts/screenshots/
+            release/x64/
+            release/x86/
+          if-no-files-found: error
+          retention-days: 14
