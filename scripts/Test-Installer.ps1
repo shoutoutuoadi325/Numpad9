@@ -28,6 +28,84 @@ $uninstalled = $false
 $passed = $false
 $screenshot = $null
 $failure = $null
+$languageSnapshot = [IO.Path]::GetTempFileName()
+$languageRestored = $false
+
+function Invoke-DisposableLanguageSetup([string]$Mode) {
+    # Run the International module in Windows PowerShell so its native language
+    # list type never crosses PowerShell 7 compatibility/remoting serialization.
+    $languageScript = @'
+param([string]$Mode, [string]$SnapshotPath, [string]$OwnTip)
+$ErrorActionPreference = 'Stop'
+Import-Module International
+function Restore-List([object[]]$Records) {
+    if (-not $Records.Count) { throw 'Original language list was empty.' }
+    $result = New-WinUserLanguageList -Language $Records[0].LanguageTag
+    foreach ($record in $Records | Select-Object -Skip 1) { $result.Add([string]$record.LanguageTag) }
+    for ($i = 0; $i -lt $Records.Count; ++$i) {
+        $result[$i].InputMethodTips.Clear()
+        foreach ($tip in $Records[$i].InputMethodTips) { $result[$i].InputMethodTips.Add([string]$tip) }
+        foreach ($property in $Records[$i].WritableProperties.PSObject.Properties) {
+            $result[$i].($property.Name) = $property.Value
+        }
+    }
+    return ,$result
+}
+if ($Mode -eq 'Enroll') {
+    $original = Get-WinUserLanguageList
+    $records = @(foreach ($language in $original) {
+        $editable = [ordered]@{}
+        foreach ($property in $language.GetType().GetProperties() | Where-Object { $_.GetSetMethod($false) -and $_.Name -notin @('LanguageTag', 'InputMethodTips') }) {
+            $editable[$property.Name] = $property.GetValue($language, $null)
+        }
+        [pscustomobject]@{ LanguageTag = $language.LanguageTag; InputMethodTips = @($language.InputMethodTips); WritableProperties = [pscustomobject]$editable }
+    })
+    if (-not $records.Count) { throw 'Current user language list was empty.' }
+    $records | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $SnapshotPath -Encoding UTF8
+    # Deserialize the saved snapshot to avoid mutating any captured objects.
+    $records = @(Get-Content -Raw -LiteralPath $SnapshotPath | ConvertFrom-Json)
+    $english = @($records | Where-Object { $_.LanguageTag -like 'en-*' } | Select-Object -First 1)
+    if ($english.Count) {
+        $ordered = @($english[0]) + @($records | Where-Object { $_.LanguageTag -ne $english[0].LanguageTag })
+        $test = Restore-List $ordered
+    } else {
+        $test = New-WinUserLanguageList -Language 'en-US'
+        $rest = Restore-List $records
+        foreach ($language in $rest) { $test.Add($language) }
+    }
+    if (-not @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' }).Count) { $test.Add('zh-CN') }
+    $chinese = @($test | Where-Object { $_.LanguageTag -eq 'zh-CN' })[0]
+    if (-not $chinese.InputMethodTips.Contains($OwnTip)) { $chinese.InputMethodTips.Add($OwnTip) }
+    # Preferences only: no Install-Language, DISM, or language-pack download.
+    Set-WinUserLanguageList -LanguageList $test -Force -WarningAction SilentlyContinue
+    $actual = Get-WinUserLanguageList
+    if ($actual[0].LanguageTag -notlike 'en-*') { throw 'CI language setup did not keep English first.' }
+    $actualChinese = @($actual | Where-Object { $_.LanguageTag -eq 'zh-CN' })
+    if (-not $actualChinese.Count -or -not $actualChinese[0].InputMethodTips.Contains($OwnTip)) { throw 'Chinese preference or this exact Numpad9 TIP was not enrolled.' }
+    Write-Host ('CI language tags: ' + (($actual | ForEach-Object { $_.LanguageTag }) -join ', '))
+} elseif ($Mode -eq 'Restore') {
+    $records = @(Get-Content -Raw -LiteralPath $SnapshotPath | ConvertFrom-Json)
+    $restored = Restore-List $records
+    Set-WinUserLanguageList -LanguageList $restored -Force -WarningAction SilentlyContinue
+    $actual = Get-WinUserLanguageList
+    if ($actual.Count -ne $records.Count) { throw 'Original language count was not restored.' }
+    for ($i = 0; $i -lt $records.Count; ++$i) {
+        if ($actual[$i].LanguageTag -ne $records[$i].LanguageTag -or
+            (@($actual[$i].InputMethodTips) -join '|') -ne (@($records[$i].InputMethodTips) -join '|')) { throw 'Original language order/input preferences were not restored.' }
+        foreach ($property in $records[$i].WritableProperties.PSObject.Properties) {
+            if ($actual[$i].($property.Name) -ne $property.Value) { throw 'An original writable language preference was not restored.' }
+        }
+    }
+    Write-Host ('Restored language tags: ' + (($actual | ForEach-Object { $_.LanguageTag }) -join ', '))
+} else { throw 'Unknown disposable language setup mode.' }
+'@
+    $escapedSnapshot = $languageSnapshot.Replace("'", "''")
+    $ownTip = "0804:$clsid$profile"
+    $command = "& {`n$languageScript`n} -Mode '$Mode' -SnapshotPath '$escapedSnapshot' -OwnTip '$ownTip'"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    & (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded
+    if ($LASTEXITCODE -ne 0) { throw "Disposable user-language $Mode failed: $LASTEXITCODE" }
+}
 
 function Read-Inproc([Microsoft.Win32.RegistryView]$View) {
     $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey('LocalMachine', $View)
@@ -112,6 +190,7 @@ try {
         $capture = Save-Numpad9WindowScreenshot -Window $hostProcess.MainWindowHandle -Path $screenshot -ToggleLanguage
         Write-Host "Captured the actual native window at $($capture.width) x $($capture.height) physical pixels."
     }
+    Invoke-DisposableLanguageSetup 'Enroll'
     foreach ($pair in @(@('x64', $dir64), @('x86', $dir32))) {
         $arch = $pair[0]
         $smoke = Join-Path $root "build/windows-$arch/$Configuration/ime_smoke.exe"
@@ -145,7 +224,15 @@ try {
         $passed = $false
         Write-Warning "Own-package cleanup failed: $cleanupFailure"
     }
-    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration and TSF profile activation, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; cleanupFailure = $cleanupFailure } |
+    try {
+        if ((Get-Item -LiteralPath $languageSnapshot).Length -gt 0) { Invoke-DisposableLanguageSetup 'Restore'; $languageRestored = $true }
+    } catch {
+        $passed = $false
+        $message = $_.Exception.Message
+        $cleanupFailure = if ($cleanupFailure) { "$cleanupFailure; $message" } else { $message }
+        Write-Warning "Disposable language restore failed: $message"
+    } finally { Remove-Item -LiteralPath $languageSnapshot -Force }
+    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration and TSF profile activation, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; originalUserLanguagePreferencesRestored = $languageRestored; cleanupFailure = $cleanupFailure } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifacts 'result.json') -Encoding UTF8
     if ($cleanupFailure -and -not $failure) { throw $cleanupFailure }
 }
