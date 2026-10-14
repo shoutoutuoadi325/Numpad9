@@ -137,10 +137,10 @@ try {
         if (-not $PackagePath) { throw 'A private real-identity package is required.' }
         if (Get-AppxPackage -Name $identity.identityName) { throw 'Refuse to replace a preexisting package.' }
         $PackagePath = (Get-Item -LiteralPath $PackagePath).FullName
-        $certificate = New-SelfSignedCertificate -Type Custom -Subject $identity.publisherDN -CertStoreLocation Cert:\CurrentUser\My -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3')
+        $certificate = New-SelfSignedCertificate -Type Custom -Subject $identity.publisherDN -CertStoreLocation Cert:\CurrentUser\My -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3','2.5.29.19={text}')
         $publicCertificate = Join-Path $privateDirectory 'runner.cer'
         Export-Certificate -Cert $certificate -FilePath $publicCertificate | Out-Null
-        Import-Certificate -FilePath $publicCertificate -CertStoreLocation Cert:\CurrentUser\TrustedPeople | Out-Null
+        Import-Certificate -FilePath $publicCertificate -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
         $signTool = @(Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin/*/x64/signtool.exe" | Sort-Object FullName -Descending)[0].FullName
         & $signTool sign /sha1 $certificate.Thumbprint /fd SHA256 $PackagePath
         if ($LASTEXITCODE -ne 0) { throw 'The temporary runner package signing failed.' }
@@ -178,17 +178,17 @@ try {
     $passed = $true
 } catch { $failureMessage = $_.Exception.Message; throw }
 finally {
-    try {
-        if ($hostProcess -and -not $hostProcess.HasExited) { Stop-Process -Id $hostProcess.Id; $hostProcess.WaitForExit(5000) | Out-Null }
-        [Numpad9StoreInputProbe]::Stop()
-        if ($installed) { Get-AppxPackage -Name $identity.identityName | Remove-AppxPackage }
-        if ($certificate) {
-            foreach ($store in @('My','TrustedPeople')) {
-                $certificatePath = "Cert:/CurrentUser/$store/$($certificate.Thumbprint)"
-                if (Test-Path $certificatePath) { Remove-Item $certificatePath }
-            }
-        }
-    } catch { $cleanupPassed = $false; $passed = $false; Write-Warning 'Isolated runner cleanup failed.' }
+    $cleanupActions = @(
+        { if ($hostProcess -and -not $hostProcess.HasExited) { Stop-Process -Id $hostProcess.Id; $hostProcess.WaitForExit(5000) | Out-Null } },
+        { [Numpad9StoreInputProbe]::Stop() },
+        { if ($installed) { Get-AppxPackage -Name $identity.identityName | Remove-AppxPackage } },
+        { if ($certificate) { $path = "Cert:/LocalMachine/TrustedPeople/$($certificate.Thumbprint)"; if (Test-Path $path) { Remove-Item $path } } },
+        { if ($certificate) { $path = "Cert:/CurrentUser/My/$($certificate.Thumbprint)"; if (Test-Path $path) { Remove-Item $path } } }
+    )
+    foreach ($cleanupAction in $cleanupActions) {
+        try { & $cleanupAction }
+        catch { $cleanupPassed = $false; $passed = $false; Write-Warning 'Isolated runner cleanup failed.' }
+    }
     if (Test-Path $privateDirectory) { Remove-Item -LiteralPath $privateDirectory -Recurse -Force }
     # Only this allowlisted report is uploaded. No grant/config/package/text.
     [ordered]@{ passed=$passed; phase=$phase; harnessOnly=[bool]$HarnessOnly; build=[Environment]::OSVersion.Version.Build;
