@@ -11,13 +11,22 @@
 #ifndef SourceUrl
   #error SourceUrl is required. Use scripts/Build-Installer.ps1.
 #endif
+#ifndef SupportUrl
+  #define SupportUrl SourceUrl
+#endif
 #ifdef UnsignedDevelopment
   #define ArtifactSuffix "-UNSIGNED-TESTING"
+  #define UnsignedPackage 1
 #else
-  #ifdef ExternalSigning
-    #define ArtifactSuffix "-EXTERNAL-SIGNING-PENDING"
+  #ifdef GitHubUnsignedRelease
+    #define ArtifactSuffix "-UNSIGNED"
+    #define UnsignedPackage 1
   #else
-    #define ArtifactSuffix "-SIGNED-CANDIDATE"
+    #ifdef ExternalSigning
+      #define ArtifactSuffix "-EXTERNAL-SIGNING-PENDING"
+    #else
+      #define ArtifactSuffix "-SIGNED-CANDIDATE"
+    #endif
   #endif
 #endif
 
@@ -27,7 +36,7 @@ AppName=Numpad9
 AppVersion={#AppVersion}
 AppPublisher={#Publisher}
 AppContact={#Contact}
-AppSupportURL={#SourceUrl}
+AppSupportURL={#SupportUrl}
 VersionInfoVersion={#AppVersion}.0
 VersionInfoCompany={#Publisher}
 VersionInfoDescription=Numpad9 phone-style numeric keypad input method
@@ -55,7 +64,7 @@ CloseApplications=no
 RestartApplications=no
 RestartIfNeededByRun=no
 SetupLogging=yes
-#ifdef UnsignedDevelopment
+#ifdef UnsignedPackage
 SignedUninstaller=no
 #else
 #ifndef ExternalSigning

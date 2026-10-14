@@ -61,6 +61,16 @@ void LogGuid(const char* label, const GUID& value) {
     std::cerr << '\n';
 }
 
+LRESULT CALLBACK TestWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_INPUTLANGCHANGEREQUEST || message == WM_INPUTLANGCHANGE) {
+        std::cerr << "Host language message=0x" << std::hex << message
+            << ", requested=" << reinterpret_cast<HKL>(lparam)
+            << ", current=" << GetKeyboardLayout(0) << '\n';
+    }
+    // Let Windows complete the language change and forward it to RichEdit.
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
 void LogInputState(const char* stage, ITfInputProcessorProfiles* profiles,
                    ITfInputProcessorProfileMgr* manager, ITfKeystrokeMgr* keys) {
     LANGID language = 0;
@@ -96,10 +106,14 @@ HRESULT SelectChineseLayout(HKL& selected, bool& newlyLoaded) {
         newlyLoaded = std::find(layouts.begin(), layouts.begin() + loaded, selected) == layouts.begin() + loaded;
     }
     if (LOWORD(reinterpret_cast<ULONG_PTR>(selected)) != numpad9::ime::kLanguage) return E_FAIL;
-    if (!ActivateKeyboardLayout(selected, KLF_SETFORPROCESS)) {
+    const HKL prior = ActivateKeyboardLayout(selected, KLF_SETFORPROCESS);
+    std::cerr << "Native layout selection: previous=" << prior << ", requested=" << selected
+        << ", immediate=" << GetKeyboardLayout(0) << '\n';
+    if (!prior) {
         const DWORD code = GetLastError(); return code ? HRESULT_FROM_WIN32(code) : E_FAIL;
     }
     Pump(150);
+    std::cerr << "Native layout after message pump=" << GetKeyboardLayout(0) << '\n';
     return LOWORD(reinterpret_cast<ULONG_PTR>(GetKeyboardLayout(0))) == numpad9::ime::kLanguage ? S_OK : E_FAIL;
 }
 
@@ -385,7 +399,12 @@ int RegisteredSmoke() {
     TfClientId client = 0;
     if (!check(thread->Activate(&client), "Activate TSF host thread")) return result;
     HMODULE richEdit = LoadLibraryW(L"msftedit.dll");
-    HWND window = richEdit ? CreateWindowExW(0, L"STATIC", L"Numpad9 registered TSF test",
+    WNDCLASSW windowClass{};
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpfnWndProc = TestWindowProc;
+    windowClass.lpszClassName = L"Numpad9.RegisteredSmoke";
+    const ATOM registeredClass = richEdit ? RegisterClassW(&windowClass) : 0;
+    HWND window = registeredClass ? CreateWindowExW(0, windowClass.lpszClassName, L"Numpad9 registered TSF test",
         WS_OVERLAPPEDWINDOW, 20, 20, 400, 160, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr) : nullptr;
     HWND edit = window ? CreateWindowExW(0, MSFTEDIT_CLASS, L"", WS_CHILD | WS_VISIBLE |
         WS_TABSTOP | ES_MULTILINE, 10, 10, 360, 90, window, nullptr, GetModuleHandleW(nullptr), nullptr) : nullptr;
@@ -393,6 +412,10 @@ int RegisteredSmoke() {
         std::cerr << "Create TSF RichEdit host: " << GetLastError() << '\n'; result = 11;
     } else {
         SendMessageW(edit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
+        const LRESULT languageOptions = SendMessageW(edit, EM_GETLANGOPTIONS, 0, 0);
+        SendMessageW(edit, EM_SETLANGOPTIONS, 0, languageOptions & ~IMF_AUTOKEYBOARD);
+        std::cerr << "RichEdit original language options=0x" << std::hex << languageOptions
+            << ", current=0x" << SendMessageW(edit, EM_GETLANGOPTIONS, 0, 0) << '\n';
         ShowWindow(window, SW_SHOW); SetForegroundWindow(window); SetActiveWindow(window); SetFocus(edit);
         Pump(150);
         // Queue the selected profile before switching languages, as documented
@@ -482,6 +505,7 @@ int RegisteredSmoke() {
     if (window) DestroyWindow(window);
     Pump(100);
     check(thread->Deactivate(), "Deactivate TSF host thread");
+    if (registeredClass) UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
     if (richEdit) FreeLibrary(richEdit);
     if (!result) std::cout << "Installed TSF profile, foreground key sink and RichEdit context checks passed.\n";
     return result;

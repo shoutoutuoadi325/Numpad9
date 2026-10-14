@@ -1,6 +1,6 @@
 # Numpad9 · 九键输入
 
-将电脑数字小键盘按**手机九键的物理位置**映射，支持离线中文拼音和英文候选。GitHub 提供 EXE 版本；Microsoft Store 使用 MSIX 版本。当前源码版本为 `0.1.0`，MSIX 输入服务的 Microsoft 授权及商店认证尚未完成。
+将电脑数字小键盘按**手机九键的物理位置**映射，支持离线中文拼音和英文候选。GitHub EXE 面向 Windows 10/11 x64；Microsoft Store 使用独立 MSIX 版本。当前版本为 `0.1.0`，首次公开发行采用预发行标签 `v0.1.0`。Microsoft Store 的输入服务授权和商店审批仍在准备中。
 
 | 手机位置 | 功能 | 电脑小键盘键帽 |
 | --- | --- | --- |
@@ -9,6 +9,12 @@
 | 7 / 8 / 9 | PQRS / TUV / WXYZ | 1 / 2 / 3 |
 
 输入「你好」的拼音 `nihao`，手机逻辑编码是 `64426`，实际按电脑小键盘 **6 4 4 8 6**。Num Lock 开启或关闭时均按物理位置转换；主键盘数字与独立方向键保留各自功能。
+
+## 下载
+
+[GitHub Releases](https://github.com/shoutoutuoadi325/Numpad9/releases) 提供未签名 EXE 预发行、完整对应源码及 SHA256。首个 `v0.1.0` 下载目前尚未发布；发布后选择 `Numpad9-0.1.0-x64-UNSIGNED.exe`。Windows 可能显示未知发布者或信任提示，安装需要管理员授权。问题反馈：[GitHub Issues](https://github.com/shoutoutuoadi325/Numpad9/issues)。
+
+[Microsoft Store 链接](https://apps.microsoft.com/detail/9N82M2S3QS4C) 对应独立商店版本，目前尚未上架。
 
 ## EXE 版本使用
 
@@ -22,7 +28,7 @@
 
 关闭帮助窗口后输入法仍然可用。切回其他输入法即可恢复普通小键盘输入。输入服务直接通过 Windows TSF 写入目标文本控件；没有全局键盘钩子、剪贴板替换、模拟按键、驱动或后台联网服务。密码和受保护的上下文不提供九键转换。
 
-工程目标为 Windows 10 1809+ / Windows 11 **x64**，同时提供 x86 DLL 用于 32 位文本应用。暂不支持 ARM64、32 位 Windows 或 S 模式。当前按项目要求使用代码审查、跨平台核心测试和 Windows 自动化构建检查；手动兼容性清单供后续维护参考。
+工程目标为 Windows 10 1809+ / Windows 11 **x64**，同时提供 x86 DLL 用于 32 位文本应用。暂不支持 ARM64、32 位 Windows 或 S 模式。
 
 ## 构建
 
@@ -62,6 +68,6 @@ MSIX 版本使用 Windows 的 `Windows.UI.Input.Preview.Text` 输入服务 API�
 
 ## GitHub EXE 发布
 
-EXE 保留 Windows 10/11 x64 的原生 TSF 路线，带 x86 输入组件，用于传统桌面应用。安装器注册系统输入法，升级时使用独立版本目录，卸载撤销注册。GitHub 将提供安装器和版本对应的完整源码压缩包，并附上商店下载链接。未签名 EXE 可能显示 Windows 信任提示；可用 [Mac 签名流程](docs/store/mac-signing.md)另行签名。商店只提交 MSIX。
+EXE 保留 Windows 10/11 x64 的原生 TSF 路线，带 x86 输入组件，用于传统桌面应用。安装器注册系统输入法，升级时使用独立版本目录，卸载撤销注册。公开资产包括真实发行人元数据的未签名安装器、版本对应的完整源码压缩包及 SHA256；流程见 [GitHub 发布说明](docs/release-github.md)。未签名 EXE 可能显示 Windows 信任提示；可用 [Mac 签名流程](docs/store/mac-signing.md)另行签名。商店只提交 MSIX。
 
 程序采用 GNU GPL v3；中文词库采用 CC BY-SA 4.0，英文词表采用其原始开放许可。完整许可和署名见 `LICENSE`、`data/NOTICE.txt`、`data/licenses/`。发布二进制时必须提供对应的完整源码及构建脚本，不附加限制这些许可权利的条款。
