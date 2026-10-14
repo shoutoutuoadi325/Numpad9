@@ -212,7 +212,8 @@ void Layout() {
     int margin=28, left=margin, mapWidth = columns ? 330 : width-2*margin;
     int right = columns ? 400 : margin, rightWidth = columns ? width-right-margin : width-2*margin;
     int practiceY = columns ? 170 : 630;
-    contentHeight=Scale(columns ? 740 : 1170);
+    int bottom = practiceY + 469 + 77 + 24;
+    contentHeight=Scale(bottom + 124);
     int maxScroll = (contentHeight>client.bottom) ? contentHeight-client.bottom : 0;
     if (scrollY>maxScroll) scrollY=maxScroll;
     SCROLLINFO info{sizeof(info),SIF_RANGE|SIF_PAGE|SIF_POS,0,contentHeight,static_cast<UINT>(client.bottom),scrollY,0};
@@ -231,7 +232,6 @@ void Layout() {
     Place(GetDlgItem(mainWindow,kClear),right,practiceY+345,rightWidth,32);
     Place(example,right,practiceY+390,rightWidth,65);
     Place(tips,right,practiceY+469,rightWidth,77);
-    int bottom=columns ? 636 : 1034;
     Place(footer,left,bottom,width-2*margin,55);
     int buttonWidth=(width-2*margin-20)/3;
     Place(GetDlgItem(mainWindow,kHelp),left,bottom+62,buttonWidth,34);
