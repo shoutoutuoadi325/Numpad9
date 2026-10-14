@@ -426,3 +426,12 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Native build, staging and release outputs
+/build/
+/release/
+/artifacts/
+# Microsoft input API grants are local configuration, never source archives.
+/private/
+input-access.json
+.DS_Store

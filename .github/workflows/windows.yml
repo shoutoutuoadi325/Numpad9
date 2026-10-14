@@ -1,0 +1,143 @@
+name: Windows candidate build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Optional public unsigned prerelease tag, e.g. v0.1.0. Leave blank to build only.'
+        required: false
+        default: ''
+        type: string
+permissions:
+  contents: read
+jobs:
+  exe:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test native x64 and x86
+        shell: pwsh
+        run: ./scripts/Build-Windows.ps1
+      - name: Locate Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw 'Runner needs Inno Setup 6.3 or newer.' }
+      - name: Build unsigned testing installer
+        shell: pwsh
+        run: ./scripts/Build-Installer.ps1 -UnsignedDevelopment
+      - name: Automated installer and native window smoke
+        shell: pwsh
+        run: ./scripts/Test-Installer.ps1
+      - name: Archive corresponding source
+        if: always()
+        shell: pwsh
+        run: ./scripts/Build-SourceArchive.ps1
+      - name: Upload unsigned testing artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-UNSIGNED-TESTING-Windows-x64
+          path: |
+            artifacts/*UNSIGNED-TESTING.exe
+            artifacts/*-source.zip
+            artifacts/installer-smoke/
+            artifacts/screenshots/
+            release/x64/
+            release/x86/
+            build/windows-x64/Release/ime_smoke.exe
+            build/windows-x86/Release/ime_smoke.exe
+          if-no-files-found: error
+          retention-days: 14
+  github-release:
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    needs: exe
+    runs-on: windows-2022
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: github-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release version and exact checkout
+        id: plan
+        shell: pwsh
+        run: ./scripts/Prepare-GitHubRelease.ps1 -Tag $env:RELEASE_TAG -AllowCreateTag
+      - name: Download same-run tested EXE payload
+        uses: actions/download-artifact@v4
+        with:
+          name: Numpad9-UNSIGNED-TESTING-Windows-x64
+          path: .
+      - name: Build real-metadata public unsigned installer
+        shell: pwsh
+        run: |
+          $plan = Get-Content -Raw artifacts/github-release-plan.json | ConvertFrom-Json
+          ./scripts/Build-Installer.ps1 -Version $plan.version -GitHubUnsignedRelease `
+            -Publisher $plan.publisher -Contact $plan.supportUrl -SupportUrl $plan.supportUrl -SourceUrl $plan.sourceUrl
+      - name: Check the exact public installer
+        shell: pwsh
+        run: |
+          $plan = Get-Content -Raw artifacts/github-release-plan.json | ConvertFrom-Json
+          ./scripts/Test-Installer.ps1 -Version $plan.version -Installer "./artifacts/Numpad9-$($plan.version)-x64-UNSIGNED.exe"
+      - name: Finalize exact source archive and checksums
+        shell: pwsh
+        run: ./scripts/Prepare-GitHubRelease.ps1 -Tag $env:RELEASE_TAG -AllowCreateTag -Phase Finalize
+      - name: Create draft, verify uploaded bytes, publish prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/Publish-GitHubRelease.ps1
+      - name: Retain public release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-GitHub-UNSIGNED-Release-Evidence
+          path: |
+            artifacts/github-release/
+            artifacts/github-release-plan.json
+            artifacts/github-release-result.json
+            artifacts/github-release-notes.md
+            artifacts/installer-smoke/
+            artifacts/screenshots/
+          retention-days: 14
+  msix:
+    # Independent of EXE install/screenshot checks; each job uses the same commit.
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and SDK-validate MSIX with development identity
+        shell: pwsh
+        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - name: Store host startup and genuine bilingual onboarding screenshots
+        shell: pwsh
+        run: ./scripts/Test-StoreHost.ps1
+      - name: Archive corresponding source
+        if: always()
+        shell: pwsh
+        run: ./scripts/Build-SourceArchive.ps1
+      - name: Upload MSIX development-identity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-MSIX-DEVELOPMENT-IDENTITY-Windows-x64
+          path: |
+            artifacts/*DEVELOPMENT-IDENTITY-UNSIGNED.msix
+            artifacts/msix-*.json
+            artifacts/msix-*.log
+            artifacts/store-host-smoke/
+            artifacts/screenshots/store-host-*.png
+            artifacts/*-source.zip
+          if-no-files-found: error
+          retention-days: 14

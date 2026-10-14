@@ -1,0 +1,43 @@
+Numpad9 offline dictionary attribution and modifications
+
+CHINESE WORDS AND PINYIN
+CC-CEDICT, maintained by the CC-CEDICT community and published by MDBG.
+Source: https://www.mdbg.net/chinese/dictionary?page=cc-cedict
+Contributors/editor: https://cc-cedict.org/editor/editor.php
+Referenced original work: CEDICT, Copyright (C) 1997, 1998 Paul Andrew Denisowski.
+Snapshot: CC-CEDICT release dated 2026-10-12T08:13:53Z; retrieved 2026-10-13.
+Licensed under Creative Commons Attribution-ShareAlike 4.0 International:
+https://creativecommons.org/licenses/by-sa/4.0/
+The complete license is included in licenses/CC-BY-SA-4.0.txt.
+
+Numpad9 modifications: select simplified output spellings; remove definitions,
+traditional spellings and tone numbers; normalize Pinyin case and separators;
+encode u: / umlaut u as v; omit unsupported mixed Latin/numeric pronunciation
+notations; deduplicate identical spelling/output pairs; add original common
+phrases and heuristic preference ranks. These Chinese adaptations and original
+Numpad9 ranking additions are also licensed under CC BY-SA 4.0. No attribution
+to the upstream contributors implies endorsement of Numpad9.
+
+ENGLISH WORDS
+SCOWL (Spell Checker Oriented Word Lists), release 2020.12.07.
+Copyright 2000-2018 by Kevin Atkinson and additional source contributors as
+identified in licenses/SCOWL-COPYRIGHT.txt. See that file for the complete
+copyright, source-credit and permission notices, including WordNet, VarCon,
+Ispell and other included contributors.
+Source: https://wordlist.aspell.net/
+Release: https://downloads.sourceforge.net/wordlist/scowl-2020.12.07.tar.gz
+Numpad9 modifications: select English and American words in size categories
+up to 50; omit uppercase, punctuation and non-ASCII spellings; deduplicate;
+convert size categories to heuristic rank scores; add original common-word
+preferences. This is a modified dictionary derived from the SCOWL source.
+
+This lexicon is plain UTF-8 TSV (spelling, output text, preference rank), so it
+can be inspected, copied, extracted, changed and redistributed in accordance
+with the applicable licenses. No additional restriction or digital rights
+management is imposed on the dictionary. The application code's license is
+separate from the dictionary licenses. All dictionary lookup is offline.
+
+Exact source snapshots and SHA-256 checksums: SOURCES.json.
+Reproduction instructions and technical limits: docs/dictionary.md in the
+project's source distribution. The development importer does not access the
+network, and the shipped application never runs the importer.
