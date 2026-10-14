@@ -40,7 +40,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class Numpad9CiInputSession {
-    [DllImport("kernel32.dll")] public static extern uint GetActiveConsoleSessionId();
+    [DllImport("kernel32.dll", EntryPoint = "WTSGetActiveConsoleSessionId")]
+    public static extern uint GetActiveConsoleSessionId();
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] private static extern IntPtr GetThreadDesktop(uint thread);
     [DllImport("user32.dll")] private static extern IntPtr GetProcessWindowStation();

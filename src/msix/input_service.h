@@ -8,8 +8,9 @@
 
 namespace numpad9::msix {
 
-// These values must come from Microsoft's approval for this package identity.
-// An arbitrary inputProfile string is not a substitute for profile onboarding.
+// featureId/token/attestation come from Microsoft's grant for this package.
+// inputProfile is a separate Windows input-profile binding; it must match the
+// actual platform configuration, rather than an invented profile identifier.
 struct Config {
     std::wstring featureId;
     std::wstring token;

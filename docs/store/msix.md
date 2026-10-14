@@ -8,11 +8,11 @@ MSIX 使用独立 `Numpad9Store.exe`，目标为 **Windows 11 24H2（build 26100
 
 以下三项必须与 **MSIX 产品** Partner Center 产品标识完全一致：包标识名称 `IdentityName`、发行人证书主题 `PublisherDN`、发行人显示名称 `PublisherDisplayName`。已建立的 EXE 产品标识不能自动当作 MSIX 标识；不要根据应用名称或法律姓名猜测这些值。
 
-包声明 `runFullTrust` 和自定义能力 `Microsoft.appCategory.textInputMethod_8wekyb3d8bbwe`，后者需要 Microsoft 授权和 Store 审批。输入访问配置还需要真实的 `featureId`、`token`、`attestation`、`inputProfile`，须由 Microsoft 给出或按其正式授权流程取得。它们不是商业签名证书，不能编造。
+包声明 `runFullTrust` 和自定义能力 `Microsoft.appCategory.textInputMethod_8wekyb3d8bbwe`，后者需要 Store 能力审批。已收到与真实包身份匹配的 LAF `featureId`、`token` 和 `attestation`；实际值只保存在本地私有配置中。这三项授权信息与 Windows 的 `inputProfile` 绑定参数分别处理，没有官方依据表明微软必须另行发放第四个专属标识。绑定参数仍需与实际系统输入配置匹配并验证运行行为。LAF 令牌不替代 Store 能力审批，也不是商业签名证书。
 
 空模板位于 `packaging/msix/input-access.example.json`。在本地 `private/input-access.json` 填入真实值，实际授权文件不提交仓库。`.gitignore` 忽略 `private/` 和所有实际 `input-access.json`；源码归档也排除该运行配置。正式包会将配置交付运行时，所以不要在这里放账户密码、私钥或其他无关秘密。
 
-脚本检查四个字段均为非空、无占位符的字符串，复制为包根目录 `input-access.json`，报告只记录哈希。**离线结构检查不能证明授权有效或绑定关系正确。** Microsoft 的授权、实际运行时许可和 Store 能力认证仍是发布条件。`inputProfile` 的配置格式、系统生命周期和授权方式需要以 Microsoft 提供的契约为准，不擅自补写传统 TSF 注册。
+脚本检查四个字段均为非空、无占位符的字符串，复制为包根目录 `input-access.json`，报告只记录哈希。**离线结构检查不能证明授权有效或绑定关系正确。** 实际运行时许可和 Store 能力认证仍需确认。Windows 既有输入配置字符串有 `LANGID:KLID` 或 `LANGID:{CLSID}{ProfileGUID}` 格式，但新 API 的 `inputProfile` 参数说明尚未明确这些格式的语义。不能以填入一个字符串代替对创建处理器、系统选择、安装及卸载生命周期的确认。[Windows 输入配置格式](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs?view=windows-11)、[新 API 参数](https://learn.microsoft.com/en-us/uwp/api/windows.ui.input.preview.text.textinputservice.createkeyboardinputprocessor?view=winrt-26100)。
 
 ## 构建
 

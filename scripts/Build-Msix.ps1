@@ -54,7 +54,7 @@ if ($RuntimeConfigurationPath) {
     $RuntimeConfigurationPath = $configurationFile.FullName
     $runtimeConfigurationHash = (Get-FileHash -LiteralPath $RuntimeConfigurationPath -Algorithm SHA256).Hash
 } elseif (-not $DevelopmentIdentity) {
-    throw 'Store upload builds require RuntimeConfigurationPath with actual Microsoft-granted featureId, token, attestation and inputProfile. These are not commercial signing credentials.'
+    throw 'Store upload builds require RuntimeConfigurationPath with Microsoft-granted featureId/token/attestation and a verified Windows inputProfile binding. These are not commercial signing credentials.'
 }
 
 if (-not $MakeAppx) {
