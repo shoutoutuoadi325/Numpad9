@@ -43,18 +43,20 @@ if ($RuntimeConfigurationPath) {
     if ($configurationFile.PSIsContainer) { throw 'RuntimeConfigurationPath must be a JSON file.' }
     try { $runtimeConfiguration = Get-Content -Raw -Encoding UTF8 -LiteralPath $configurationFile.FullName | ConvertFrom-Json }
     catch { throw 'Runtime configuration must be valid JSON. Its contents are not printed.' }
-    $requiredFields = @('featureId', 'token', 'attestation', 'inputProfile')
+    $requiredFields = @('featureId', 'token', 'attestation')
     foreach ($field in $requiredFields) {
         $property = $runtimeConfiguration.PSObject.Properties[$field]
         if (-not $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value) -or $property.Value -match '(?i)REPLACE[_ ]?ME|YOUR_[A-Z_]+|REQUIRED BEFORE PUBLICATION|@@|^<.*>$') {
             throw "Runtime configuration requires a non-placeholder string: $field"
         }
     }
-    if (@($runtimeConfiguration.PSObject.Properties.Name | Where-Object { $_ -notin $requiredFields }).Count) { throw 'Runtime configuration contains unexpected fields.' }
+    $binding = $runtimeConfiguration.PSObject.Properties['inputProfile']
+    if ($binding -and $binding.Value -isnot [string]) { throw 'Optional inputProfile must be a string; empty selects the active Windows profile.' }
+    if (@($runtimeConfiguration.PSObject.Properties.Name | Where-Object { $_ -notin ($requiredFields + 'inputProfile') }).Count) { throw 'Runtime configuration contains unexpected fields.' }
     $RuntimeConfigurationPath = $configurationFile.FullName
     $runtimeConfigurationHash = (Get-FileHash -LiteralPath $RuntimeConfigurationPath -Algorithm SHA256).Hash
 } elseif (-not $DevelopmentIdentity) {
-    throw 'Store upload builds require RuntimeConfigurationPath with Microsoft-granted featureId/token/attestation and a verified Windows inputProfile binding. These are not commercial signing credentials.'
+    throw 'Store upload builds require RuntimeConfigurationPath with Microsoft-granted featureId/token/attestation. These are not commercial signing credentials.'
 }
 
 if (-not $MakeAppx) {

@@ -9,8 +9,8 @@
 namespace numpad9::msix {
 
 // featureId/token/attestation come from Microsoft's grant for this package.
-// inputProfile is a separate Windows input-profile binding; it must match the
-// actual platform configuration, rather than an invented profile identifier.
+// inputProfile is an optional Windows input-profile binding. When empty, Start
+// reads the active system profile. It is not a fourth Microsoft grant field.
 struct Config {
     std::wstring featureId;
     std::wstring token;

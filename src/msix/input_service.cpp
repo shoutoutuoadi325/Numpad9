@@ -4,6 +4,7 @@
 #include <appmodel.h>
 #include <cmath>
 #include <mutex>
+#include <msctf.h>
 
 #if __has_include(<winrt/Windows.UI.Input.Preview.Text.h>)
 #define NUMPAD9_HAS_PREVIEW_TEXT 1
@@ -21,6 +22,34 @@ namespace text = winrt::Windows::UI::Input::Preview::Text;
 using winrt::Windows::System::VirtualKey;
 using winrt::Windows::UI::Text::Core::CoreTextRange;
 namespace {
+std::wstring ActiveInputProfile() {
+    winrt::com_ptr<ITfInputProcessorProfileMgr> manager;
+    winrt::check_hresult(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+        CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfileMgr, manager.put_void()));
+    TF_INPUTPROCESSORPROFILE profile{};
+    const auto result = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile);
+    winrt::check_hresult(result);
+    if (result != S_OK) winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_NOT_READY));
+    wchar_t language[5]{};
+    swprintf_s(language, L"%04X", static_cast<unsigned int>(profile.langid));
+    std::wstring identifier = std::wstring(language) + L":";
+    if (profile.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR) {
+        wchar_t clsid[39]{}, guid[39]{};
+        if (IsEqualGUID(profile.clsid, GUID_NULL) || IsEqualGUID(profile.guidProfile, GUID_NULL) ||
+            !StringFromGUID2(profile.clsid, clsid, 39) || !StringFromGUID2(profile.guidProfile, guid, 39))
+            winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_INVALID_DATA));
+        return identifier + clsid + guid;
+    }
+    if (profile.dwProfileType != TF_PROFILETYPE_KEYBOARDLAYOUT)
+        winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED));
+    // GetKeyboardLayoutName describes this thread. Reject a changed binding
+    // rather than attaching to a different keyboard while enabling the app.
+    if (profile.hkl != GetKeyboardLayout(0))
+        winrt::throw_hresult(HRESULT_FROM_WIN32(ERROR_RETRY));
+    wchar_t layout[KL_NAMELENGTH]{};
+    if (!GetKeyboardLayoutNameW(layout)) winrt::throw_last_error();
+    return identifier + layout;
+}
 bool BoundsValue(const winrt::Windows::Foundation::Rect& bounds,
                  winrt::Windows::Foundation::Rect& value) { value = bounds; return true; }
 bool BoundsValue(const winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>& bounds,
@@ -53,7 +82,6 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     text::KeyboardInputProcessor::CompositionTerminated_revoker terminated;
     text::KeyboardInputProcessor::TextBoxInfoChanged_revoker infoChanged;
     text::KeyboardInputProcessor::TextBoxContentChanged_revoker contentChanged;
-    text::KeyboardInputProcessor::ConversionModeChanged_revoker modeChanged;
     text::KeyboardInputProcessor::KeyEventReceived_revoker keyReceived;
 #endif
     bool OnThread() const noexcept { return GetCurrentThreadId() == thread; }
@@ -103,8 +131,8 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             snapshot.active = processor && processor.IsActive();
             snapshot.hasFocus = Allowed();
             snapshot.state = snapshot.active ? State::Ready : State::WaitingForActivation;
-            snapshot.message = snapshot.active ? L"Windows 输入服务已激活。" :
-                L"等待 Windows 激活已批准的输入配置。";
+            snapshot.message = snapshot.active ? L"九键输入已启用；停用即可恢复小键盘数字。" :
+                L"请使用启用时的 Windows 输入法或布局，或停用后重新启用。";
             if (!snapshot.hasFocus) { Clear(); consumed.fill(false); }
             snapshot.anchor = {}; snapshot.anchorValid = false;
             if (snapshot.hasFocus) {
@@ -200,14 +228,13 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
     bool Toggle(const text::TextEditSession& session = nullptr) {
         if (!engine.Digits().empty() && (!session || !Finish(session, false))) return false;
         const Mode next = engine.GetMode() == Mode::Pinyin ? Mode::English : Mode::Pinyin;
-        // Updating the platform's conversion mode also exposes idle 中/A state.
-        processor.ConversionMode(next == Mode::English ? text::TextConversionMode::AlphanumericHalfWidth :
-            text::TextConversionMode::NativeHalfWidth);
+        // The app owns its Pinyin/English mode. A keyboard layout may not
+        // support native conversion; do not change another profile's settings.
         engine.SetMode(next); Publish(); return true;
     }
     void Key(const text::KeyEventReceivedEventArgs& args) noexcept {
         std::lock_guard<std::recursive_mutex> lock(mutex);
-        if (!OnThread() || !running || busy) return;
+        if (!running || busy) return;
         struct Busy { bool& value; explicit Busy(bool& v) : value(v) { value = true; } ~Busy() { value = false; } } guard(busy);
         try {
             const auto status = args.KeyStatus();
@@ -282,7 +309,9 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
         return [weak, callback](const auto&, const auto& args) noexcept {
             if (const auto self = weak.lock()) {
                 std::lock_guard<std::recursive_mutex> lock(self->mutex);
-                if (!self->OnThread() || !self->running || self->busy) return;
+                // The projected input objects are agile. Handle a key within
+                // its event lifetime; only UI rendering is queued to the host.
+                if (!self->running || self->busy) return;
                 try { callback(*self, args); }
                 catch (...) { self->busy = false; self->Fail(State::Failed, L"输入服务事件处理失败。", E_FAIL); }
             }
@@ -303,7 +332,6 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
         busy = false;
         keyReceived.revoke(); activated.revoke(); deactivated.revoke(); entered.revoke();
         removed.revoke(); terminated.revoke(); infoChanged.revoke(); contentChanged.revoke();
-        modeChanged.revoke();
         processor = nullptr; service = nullptr;
 #endif
         Clear(); snapshot.state = State::Stopped; snapshot.message = L"输入服务已停止。";
@@ -313,8 +341,8 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
         std::lock_guard<std::recursive_mutex> lock(mutex);
         Stop();
         if (!OnThread()) { Fail(State::Failed, L"输入服务必须由界面线程启动。", RPC_E_WRONG_THREAD); return false; }
-        if (config.featureId.empty() || config.token.empty() || config.attestation.empty() || config.inputProfile.empty()) {
-            Fail(State::NotConfigured, L"Microsoft 输入法权限申请尚未完成：缺少授权令牌或已批准的输入配置。"); return false;
+        if (config.featureId.empty() || config.token.empty() || config.attestation.empty()) {
+            Fail(State::NotConfigured, L"输入服务配置不完整，请更新应用或联系支持。"); return false;
         }
 #ifndef NUMPAD9_HAS_PREVIEW_TEXT
         (void)path;
@@ -338,8 +366,9 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             if (!engine.LoadDictionary(path)) {
                 Fail(State::Failed, L"无法加载内置离线词库。", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)); return false;
             }
+            const auto profile = config.inputProfile.empty() ? ActiveInputProfile() : config.inputProfile;
             service = text::TextInputService::GetForCurrentThread();
-            processor = service.CreateKeyboardInputProcessor(config.inputProfile);
+            processor = service.CreateKeyboardInputProcessor(profile);
             if (!processor) { Fail(State::Failed, L"Windows 未接受已配置的输入配置。", E_FAIL); return false; }
             running = true;
             activated = processor.Activated(winrt::auto_revoke, Handler([](Impl& self, const auto&) { self.Refresh(); }));
@@ -351,25 +380,8 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             contentChanged = processor.TextBoxContentChanged(winrt::auto_revoke, Handler([](Impl& self, const auto& args) {
                 if (args.Source() == text::TextChangeSource::External) self.Clear(); self.Refresh();
             }));
-            modeChanged = processor.ConversionModeChanged(winrt::auto_revoke, Handler([](Impl& self, const auto& args) {
-                const auto mode = args.NewConversionMode();
-                const Mode next = mode == text::TextConversionMode::AlphanumericHalfWidth ||
-                    mode == text::TextConversionMode::AlphanumericFullWidth ||
-                    mode == text::TextConversionMode::NoConversion ? Mode::English : Mode::Pinyin;
-                if (next != self.engine.GetMode()) {
-                    if (!self.engine.Digits().empty() && self.Allowed()) {
-                        self.busy = true;
-                        const auto session = self.processor.CreateEditSession();
-                        if (session) self.Finish(session, false);
-                        self.busy = false;
-                    }
-                    self.engine.SetMode(next); self.Clear();
-                }
-                self.Refresh();
-            }));
             keyReceived = processor.KeyEventReceived(winrt::auto_revoke, Handler([](Impl& self, const auto& args) { self.Key(args); }));
             busy = true;
-            processor.ConversionMode(text::TextConversionMode::NativeHalfWidth);
             engine.SetMode(Mode::Pinyin); busy = false;
             Refresh(); return running;
         } catch (const winrt::hresult_error& error) {
