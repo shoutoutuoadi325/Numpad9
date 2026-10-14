@@ -49,6 +49,7 @@ constexpr UINT kTrayOpen = 401, kTrayQuit = 402, kTrayMode = 403;
 std::unique_ptr<numpad9::msix::InputService> inputService;
 numpad9::ime::CandidateWindow candidateWindow;
 bool shuttingDown = false, serviceStarted = false, trayAdded = false;
+std::atomic<HWND> inputNotifyWindow{nullptr};
 std::filesystem::path AppDirectory() {
     std::wstring path(32768, L'\0');
     DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
@@ -70,7 +71,12 @@ numpad9::msix::Config ReadInputConfig() {
     auto value = [&json](const wchar_t* key) { return std::wstring(json.GetNamedString(key, L"")); };
     return {value(L"featureId"), value(L"token"), value(L"attestation"), value(L"inputProfile")};
 }
-void InputChanged(const numpad9::msix::Snapshot& snapshot) {
+void InputChanged(const numpad9::msix::Snapshot&) {
+    // System events may arrive outside the UI thread. Queue a notification;
+    // read the latest snapshot and touch windows only on the host's UI thread.
+    if (const HWND window = inputNotifyWindow.load()) PostMessageW(window, kInputChanged, 0, 0);
+}
+void RenderInput(const numpad9::msix::Snapshot& snapshot) {
     if (shuttingDown || !mainWindow) return;
     if (snapshot.active && snapshot.hasFocus && !snapshot.digits.empty()) {
         candidateWindow.SetAction([revision = snapshot.revision](size_t index, bool commit) {
@@ -86,7 +92,6 @@ void InputChanged(const numpad9::msix::Snapshot& snapshot) {
         candidateWindow.Update(anchor, nullptr, snapshot.mode, snapshot.digits,
                                snapshot.candidates, snapshot.selected, true);
     } else candidateWindow.Hide();
-    PostMessageW(mainWindow, kInputChanged, 0, 0);
 }
 void AddTray(HWND window) {
     NOTIFYICONDATAW icon{}; icon.cbSize = sizeof(icon); icon.hWnd = window; icon.uID = 1;
@@ -175,16 +180,20 @@ void UpdateText() {
 #ifdef NUMPAD9_MSIX
     SetWindowTextW(GetDlgItem(mainWindow,kActivate), serviceStarted
         ? T(L"停用九键输入", L"Stop nine-key input") : T(L"启用九键输入", L"Enable nine-key input"));
-    SetWindowTextW(example, T(L"试输入「你好」：按电脑小键盘 6 4 4 8 6，再按空格。\r\n启用后在 Windows 输入法菜单中选择 Numpad9。",
-        L"Try 你好: press PC numpad 6 4 4 8 6, then Space.\r\nAfter enabling, select Numpad9 in the Windows input-method menu."));
+    SetWindowTextW(example, T(L"试输入「你好」：按电脑小键盘 6 4 4 8 6，再按空格。\r\n启用后保持当前 Windows 输入法或布局；停用可恢复数字输入。",
+        L"Try 你好: press PC numpad 6 4 4 8 6, then Space.\r\nKeep the current Windows keyboard selected. Stop to restore numeric input."));
     SetWindowTextW(footer, T(L"离线词库 · 不记录输入 · 无广告\r\n关闭窗口可保留托盘中的输入服务；可随时停用或退出。",
         L"Offline dictionary · No typing history · No ads\r\nClose to keep input running in the tray. Stop or exit at any time."));
     if (inputService) {
         auto snapshot = inputService->GetSnapshot();
         std::wstring text = snapshot.message;
         if (!serviceStarted && snapshot.state == numpad9::msix::State::Stopped)
-            text = T(L"点击启用九键输入，然后在 Windows 输入法菜单中选择 Numpad9。",
-                     L"Enable nine-key input, then select Numpad9 in the Windows input-method menu.");
+            text = T(L"点击启用九键输入，即可在当前 Windows 输入法或布局中使用。",
+                     L"Enable nine-key input for your current Windows keyboard.");
+        if (FAILED(snapshot.error)) {
+            wchar_t code[24]{}; swprintf_s(code, L" (0x%08X)", static_cast<unsigned int>(snapshot.error));
+            text += code;
+        }
         SetWindowTextW(status, text.c_str());
     }
 #else
@@ -203,7 +212,8 @@ void Layout() {
     int margin=28, left=margin, mapWidth = columns ? 330 : width-2*margin;
     int right = columns ? 400 : margin, rightWidth = columns ? width-right-margin : width-2*margin;
     int practiceY = columns ? 170 : 630;
-    contentHeight=Scale(columns ? 740 : 1170);
+    int bottom = practiceY + 469 + 77 + 24;
+    contentHeight=Scale(bottom + 124);
     int maxScroll = (contentHeight>client.bottom) ? contentHeight-client.bottom : 0;
     if (scrollY>maxScroll) scrollY=maxScroll;
     SCROLLINFO info{sizeof(info),SIF_RANGE|SIF_PAGE|SIF_POS,0,contentHeight,static_cast<UINT>(client.bottom),scrollY,0};
@@ -222,7 +232,6 @@ void Layout() {
     Place(GetDlgItem(mainWindow,kClear),right,practiceY+345,rightWidth,32);
     Place(example,right,practiceY+390,rightWidth,65);
     Place(tips,right,practiceY+469,rightWidth,77);
-    int bottom=columns ? 636 : 1034;
     Place(footer,left,bottom,width-2*margin,55);
     int buttonWidth=(width-2*margin-20)/3;
     Place(GetDlgItem(mainWindow,kHelp),left,bottom+62,buttonWidth,34);
@@ -305,12 +314,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
     case WM_CREATE:
         mainWindow=window; dpi=GetDpiForWindow(window);
 #ifdef NUMPAD9_MSIX
+        inputNotifyWindow.store(window);
         inputService = std::make_unique<numpad9::msix::InputService>(InputChanged);
         AddTray(window);
 #endif
         CreateControls(); return 0;
 #ifdef NUMPAD9_MSIX
-    case kInputChanged: UpdateText(); return 0;
+    case kInputChanged:
+        if (inputService) RenderInput(inputService->GetSnapshot());
+        UpdateText(); return 0;
     case kTrayMessage:
         if (lParam == WM_LBUTTONDBLCLK) { ShowWindow(window, SW_RESTORE); SetForegroundWindow(window); }
         else if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
@@ -371,15 +383,15 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case kClear: SetWindowTextW(practice,L""); SetFocus(practice); return 0;
         case kHelp:
 #ifdef NUMPAD9_MSIX
-            MessageBoxW(window,T(L"1. 点击「启用九键输入」，再在 Windows 输入法菜单中选择 Numpad9。应用需要 Windows 11 24H2 或更新版本。\n2. 按手机键位的位置输入：nihao → 手机 64426 → 电脑小键盘 6 4 4 8 6。\n3. 空格 / Enter 确认；方向键 / * 选择；+ / − 翻页；Esc 取消；Backspace 删除。\n4. / 或 Ctrl + Shift + E 切换拼音与英文；电脑 7 输入逗号；小数点输入句号；0 确认或输入空格。\n5. 输入服务仅处理当前普通文本框。密码、PIN、私密和受保护字段不进行转换。\n\n关闭窗口时输入服务可留在托盘中。点击「停用九键输入」可停止转换；右键托盘选择「退出」可关闭应用。",
-                L"1. Enable nine-key input, then select Numpad9 in the Windows input-method menu. Windows 11 24H2 or later is required.\n2. Follow phone key positions: nihao -> phone 64426 -> PC numpad 6 4 4 8 6.\n3. Space / Enter commits; arrows / * select; + / - pages; Esc cancels; Backspace deletes.\n4. / or Ctrl + Shift + E switches Pinyin / English; PC 7 inserts a comma; decimal inserts a full stop; 0 commits or inserts a space.\n5. Use ordinary text fields. Passwords, PINs, private and protected fields are excluded.\n\nClose the window to keep input running in the tray. Stop nine-key input disables conversion; Exit in the tray menu closes the app."),T(L"使用说明",L"Keyboard guide"),MB_OK); return 0;
+            MessageBoxW(window,T(L"1. 选择要使用的 Windows 输入法或布局，再点击「启用九键输入」。保持该输入法或布局；切换后可停用再重新启用。应用需要 Windows 11 24H2 或更新版本。\n2. 按手机键位的位置输入：nihao → 手机 64426 → 电脑小键盘 6 4 4 8 6。\n3. 空格 / Enter 确认；方向键 / * 选择；+ / − 翻页；Esc 取消；Backspace 删除。\n4. / 或 Ctrl + Shift + E 切换拼音与英文；电脑 7 输入逗号；小数点输入句号；0 确认或输入空格。\n5. 输入服务仅处理当前普通文本框。密码、PIN、私密和受保护字段不进行转换。\n\n关闭窗口时输入服务可留在托盘中。点击「停用九键输入」可停止转换；右键托盘选择「退出」可关闭应用。",
+                L"1. Select your Windows keyboard, then enable nine-key input. Keep that keyboard selected; stop and enable again after switching keyboards. Windows 11 24H2 or later is required.\n2. Follow phone key positions: nihao -> phone 64426 -> PC numpad 6 4 4 8 6.\n3. Space / Enter commits; arrows / * select; + / - pages; Esc cancels; Backspace deletes.\n4. / or Ctrl + Shift + E switches Pinyin / English; PC 7 inserts a comma; decimal inserts a full stop; 0 commits or inserts a space.\n5. Use ordinary text fields. Passwords, PINs, private and protected fields are excluded.\n\nClose the window to keep input running in the tray. Stop nine-key input disables conversion; Exit in the tray menu closes the app."),T(L"使用说明",L"Keyboard guide"),MB_OK); return 0;
 #else
             MessageBoxW(window,T(L"1. 安装后，点击「切换到 Numpad9」或按 Win + 空格选择 Numpad9。\n2. 看手机键位的位置，忽略电脑键帽数字。中文输入不带声调的完整拼音：nihao → 64426；按电脑小键盘 6 4 4 8 6。\n3. 空格 / Enter 确认候选；方向键 / 小键盘 * 选择；小键盘 + / − 翻页；Esc 取消；Backspace 删除。\n4. 小键盘 / 或 Ctrl + Shift + E 切换中英文；手机 1（电脑 7）输入逗号；小键盘小数点输入句号；小键盘 0 确认候选或输入空格。\n5. 可逐词确认组合成句。不支持云预测或个人词库学习。切回其他输入法即可正常使用小键盘。\n\n输入法在当前文本应用内工作；不适用于密码、安全桌面或不支持 TSF 的应用。", 
                 L"1. Click Switch to Numpad9, or choose Numpad9 with Win + Space.\n2. Use phone key positions, ignoring PC keycap numbers. For Pinyin nihao (logical 64426), press PC numpad 6 4 4 8 6.\n3. Space / Enter commits; arrows / numpad * select; + / - pages; Esc cancels; Backspace deletes.\n4. Numpad / or Ctrl + Shift + E switches Chinese / English. Phone 1 (PC 7) inserts a comma; keypad decimal inserts a full stop; numpad 0 commits or inserts a space.\n5. Commit words to compose sentences. Cloud prediction and personal learning are not provided. Switch IMEs to restore numeric typing.\n\nUse ordinary TSF-compatible text fields. Passwords and secure desktops are excluded."),T(L"使用说明",L"Keyboard guide"),MB_OK); return 0;
 #endif
         case kPrivacy:
-            MessageBoxW(window,T(L"Numpad9 隐私政策 · 2026-10-13\n\nNumpad9 完全离线转换九键输入。不收集、保存或传输按键、输入文字、账号、设备标识或诊断数据；无广告、统计 SDK 或云服务。输入缓冲仅存在当前输入服务的内存中，用于组成候选并将你确认的文字交给当前文本应用。切换上下文或停用时清空未确认输入。\n\n练习框文字只在内存中，关闭窗口后丢弃。应用使用只读内置词库，不建立个人输入历史。安装、更新和卸载由安装程序及 Windows 处理。Microsoft Store 的数据处理适用微软政策；你输入文字的目标应用适用其自身政策。\n\n你可随时切换输入法，或通过 Windows 设置卸载 Numpad9。源代码及问题反馈：github.com/shoutoutuoadi325/Numpad9。",
-                L"Numpad9 Privacy Policy · 2026-10-13\n\nNumpad9 converts nine-key input entirely offline. It does not collect, save, or transmit keystrokes, text, account information, device identifiers, or diagnostics. There are no ads, analytics SDKs, or cloud services. The current input buffer exists only in input-service memory to compose candidates and deliver confirmed text. Pending input is cleared when the context changes or the service deactivates.\n\nPractice text exists only in memory and is discarded on window close. The bundled dictionary is read-only; no personal typing history is created. Windows and the installer handle installation and removal. Microsoft Store and target text applications apply their own privacy policies.\n\nSwitch IMEs at any time, or uninstall via Windows Settings. Source and issues: github.com/shoutoutuoadi325/Numpad9."),T(L"隐私政策",L"Privacy policy"),MB_OK); return 0;
+            MessageBoxW(window,T(L"Numpad9 隐私政策 · 2026-10-13\n\nNumpad9 完全离线转换九键输入。不收集、保存或传输按键、输入文字、账号、设备标识或诊断数据；无广告、统计 SDK 或云服务。输入缓冲仅存在当前输入服务的内存中，用于组成候选并将你确认的文字交给当前文本应用。切换上下文或停用时清空未确认输入。\n\n练习框文字只在内存中，退出应用后丢弃。应用使用只读内置词库，不建立个人输入历史。安装、更新和卸载由安装程序及 Windows 处理。Microsoft Store 的数据处理适用微软政策；你输入文字的目标应用适用其自身政策。\n\n你可随时切换输入法，或通过 Windows 设置卸载 Numpad9。源代码及问题反馈：github.com/shoutoutuoadi325/Numpad9。",
+                L"Numpad9 Privacy Policy · 2026-10-13\n\nNumpad9 converts nine-key input entirely offline. It does not collect, save, or transmit keystrokes, text, account information, device identifiers, or diagnostics. There are no ads, analytics SDKs, or cloud services. The current input buffer exists only in input-service memory to compose candidates and deliver confirmed text. Pending input is cleared when the context changes or the service deactivates.\n\nPractice text exists only in memory and is discarded when the app exits. The bundled dictionary is read-only; no personal typing history is created. Windows and the installer handle installation and removal. Microsoft Store and target text applications apply their own privacy policies.\n\nSwitch IMEs at any time, or uninstall via Windows Settings. Source and issues: github.com/shoutoutuoadi325/Numpad9."),T(L"隐私政策",L"Privacy policy"),MB_OK); return 0;
         case kAbout: {
             std::wstring about = T(L"Numpad9 0.1.0\n手机布局九键拼音与英文输入法。\n", L"Numpad9 0.1.0\nPhone-layout Pinyin and English input method.\n");
 #ifdef NUMPAD9_MSIX
@@ -396,7 +408,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         } break;
     case WM_DESTROY:
 #ifdef NUMPAD9_MSIX
-        shuttingDown = true; if (inputService) inputService->Stop();
+        shuttingDown = true; inputNotifyWindow.store(nullptr);
+        if (inputService) inputService->Stop();
         candidateWindow.Destroy(); inputService.reset(); RemoveTray(window);
 #endif
         PostQuitMessage(0); return 0;

@@ -1,0 +1,81 @@
+name: Store input API probe
+on:
+  pull_request:
+    paths:
+      - 'src/msix/**'
+      - 'src/app/**'
+      - 'scripts/Test-StoreInput.ps1'
+      - 'scripts/Build-Msix.ps1'
+      - '.github/workflows/store-input-probe.yml'
+  workflow_dispatch:
+    inputs:
+      use_laf_token:
+        description: 'Use the approved repository LAF secret in an isolated real-identity package; never upload that package.'
+        type: boolean
+        required: false
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: store-input-probe-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile the production host with the actual input API SDK
+        shell: pwsh
+        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-Store-Probe-Production-Host
+          path: build/windows-store/Release/Numpad9Store.exe
+          if-no-files-found: error
+          retention-days: 7
+  probe:
+    needs: build
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: Numpad9-Store-Probe-Production-Host
+          path: private/store-host
+      - name: Check the real foreground text and keyboard harness
+        shell: pwsh
+        run: ./scripts/Test-StoreInput.ps1 -HarnessOnly
+      - name: Build private granted package and verify cross-process input
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.use_laf_token
+        shell: pwsh
+        env:
+          NUMPAD9_LAF_TOKEN: ${{ secrets.NUMPAD9_LAF_TOKEN }}
+        run: |
+          if (-not $env:NUMPAD9_LAF_TOKEN) { throw 'The explicitly approved LAF secret is not configured.' }
+          New-Item -ItemType Directory -Force private/store-probe | Out-Null
+          try {
+            $identity = Get-Content -Raw packaging/msix/store-identity.json | ConvertFrom-Json
+            $publisherId = $identity.packageFamilyName.Split('_')[-1]
+            @{ featureId='com.microsoft.windows.textinputmethod'; token=$env:NUMPAD9_LAF_TOKEN;
+               attestation="$publisherId has registered their use of com.microsoft.windows.textinputmethod with Microsoft and agrees to the terms of use.";
+               inputProfile='' } | ConvertTo-Json | Set-Content private/store-probe/input-access.json -Encoding UTF8
+            ./scripts/Build-Msix.ps1 -SkipBuild -HostPath private/store-host/Numpad9Store.exe -IdentityName $identity.identityName -PublisherDN $identity.publisherDN -PublisherDisplayName $identity.publisherDisplayName -RuntimeConfigurationPath private/store-probe/input-access.json -PolicyTextPath docs/store/privacy-policy-msix.md
+            ./scripts/Test-StoreInput.ps1 -PackagePath artifacts/Numpad9-0.1.0.0-x64-STORE-UPLOAD.msix
+          } finally {
+            Remove-Item -LiteralPath private/store-probe -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath artifacts/Numpad9-0.1.0.0-x64-STORE-UPLOAD.msix -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath artifacts/msix-staging/STORE-UPLOAD -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:/NUMPAD9_LAF_TOKEN -ErrorAction SilentlyContinue
+          }
+      - name: Upload only the allowlisted diagnostic result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-Store-Input-Probe-Result
+          path: artifacts/store-input-probe/result.json
+          if-no-files-found: error
+          retention-days: 7
