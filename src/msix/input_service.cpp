@@ -368,6 +368,7 @@ struct InputService::Impl : std::enable_shared_from_this<Impl> {
             }
             const auto profile = config.inputProfile.empty() ? ActiveInputProfile() : config.inputProfile;
             service = text::TextInputService::GetForCurrentThread();
+            if (!service) { Fail(State::Failed, L"Windows 当前输入服务不可用。请更新系统或联系支持。", E_UNEXPECTED); return false; }
             processor = service.CreateKeyboardInputProcessor(profile);
             if (!processor) { Fail(State::Failed, L"Windows 未接受已配置的输入配置。", E_FAIL); return false; }
             running = true;
