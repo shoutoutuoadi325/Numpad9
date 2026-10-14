@@ -1,4 +1,4 @@
-// Windows-only COM lifecycle smoke test. No registry writes or SendInput.
+// Windows-only COM and installed input smoke tests. No SendInput or global hooks.
 // Successful registration/activation is tested separately with --registered.
 // That path asks Windows to activate the installed profile, not a manually
 // constructed service whose aggregate Activate HRESULT cannot locate a failure.
@@ -8,7 +8,24 @@
 #include <shellapi.h>
 #include <iostream>
 #include <cwchar>
+#include <atomic>
+#include <algorithm>
+#include <new>
+#include <string>
+#include <vector>
 #include "identity.h"
+#include "tsf_compat.h"
+
+// MinGW omits this SDK enumeration interface. Keep its exact COM vtable order.
+#ifndef __IEnumTfUIElements_INTERFACE_DEFINED__
+#define __IEnumTfUIElements_INTERFACE_DEFINED__
+struct IEnumTfUIElements : IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE Clone(IEnumTfUIElements**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Next(ULONG, ITfUIElement**, ULONG*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE Reset() = 0;
+    virtual HRESULT STDMETHODCALLTYPE Skip(ULONG) = 0;
+};
+#endif
 
 #ifndef TF_IPPMF_FORPROCESS
 #define TF_IPPMF_FORPROCESS 0x10000000
@@ -44,6 +61,290 @@ void LogGuid(const char* label, const GUID& value) {
     std::cerr << '\n';
 }
 
+void LogInputState(const char* stage, ITfInputProcessorProfiles* profiles,
+                   ITfInputProcessorProfileMgr* manager, ITfKeystrokeMgr* keys) {
+    LANGID language = 0;
+    const HRESULT languageResult = profiles->GetCurrentLanguage(&language);
+    TF_INPUTPROCESSORPROFILE selected{}; CLSID foreground{};
+    const HRESULT selectedResult = manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &selected);
+    const HRESULT foregroundResult = keys->GetForeground(&foreground);
+    std::cerr << stage << ": languageHr=0x" << std::hex << languageResult << ", language=0x" << language
+        << ", hkl=" << GetKeyboardLayout(0) << ", activeHr=0x" << selectedResult
+        << ", type=" << selected.dwProfileType << ", profileLanguage=0x" << selected.langid
+        << ", foregroundHr=0x" << foregroundResult << '\n';
+    LogGuid("stageActiveCLSID", selected.clsid); LogGuid("stageForegroundCLSID", foreground);
+}
+
+HRESULT SelectChineseLayout(HKL& selected, bool& newlyLoaded) {
+    const int count = GetKeyboardLayoutList(0, nullptr);
+    if (count <= 0 || count > 1024) return E_FAIL;
+    std::vector<HKL> layouts(static_cast<std::size_t>(count));
+    const int loaded = GetKeyboardLayoutList(count, layouts.data());
+    if (loaded <= 0 || loaded > count) return E_FAIL;
+    std::cerr << "Loaded keyboard layouts:";
+    for (int i = 0; i < loaded; ++i) {
+        std::cerr << ' ' << layouts[i];
+        if (!selected && LOWORD(reinterpret_cast<ULONG_PTR>(layouts[i])) == numpad9::ime::kLanguage) selected = layouts[i];
+    }
+    std::cerr << '\n';
+    if (!selected) {
+        // 00000804 is Microsoft's documented built-in Chinese(Simplified)-US
+        // layout. Win8+ LoadKeyboardLayout may affect the focused desktop, so
+        // this disposable test restores its original HKL before closing.
+        selected = LoadKeyboardLayoutW(L"00000804", KLF_ACTIVATE | KLF_SUBSTITUTE_OK);
+        if (!selected) { const DWORD code = GetLastError(); return code ? HRESULT_FROM_WIN32(code) : E_FAIL; }
+        newlyLoaded = std::find(layouts.begin(), layouts.begin() + loaded, selected) == layouts.begin() + loaded;
+    }
+    if (LOWORD(reinterpret_cast<ULONG_PTR>(selected)) != numpad9::ime::kLanguage) return E_FAIL;
+    if (!ActivateKeyboardLayout(selected, KLF_SETFORPROCESS)) {
+        const DWORD code = GetLastError(); return code ? HRESULT_FROM_WIN32(code) : E_FAIL;
+    }
+    Pump(150);
+    return LOWORD(reinterpret_cast<ULONG_PTR>(GetKeyboardLayout(0))) == numpad9::ime::kLanguage ? S_OK : E_FAIL;
+}
+
+// Read actual Windows-owned composition ranges under the host's TSF read lock.
+// Checking only RichEdit's text would not distinguish a real IME composition
+// from ordinary text insertion.
+class CompositionRead final : public ITfEditSession {
+    std::atomic<ULONG> references_{1};
+    ITfContext* context_;
+public:
+    std::vector<std::wstring> own;
+    UINT total = 0;
+    explicit CompositionRead(ITfContext* context) : context_(context) { context_->AddRef(); }
+    ~CompositionRead() { context_->Release(); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (!IsEqualIID(iid, IID_IUnknown) && !IsEqualIID(iid, IID_ITfEditSession)) return E_NOINTERFACE;
+        *out = static_cast<ITfEditSession*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override { const ULONG left = --references_; if (!left) delete this; return left; }
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
+        try {
+            Com<ITfContextComposition> composition;
+            Com<IEnumITfCompositionView> enumerator;
+            HRESULT hr = context_->QueryInterface(IID_ITfContextComposition, composition.out());
+            if (FAILED(hr)) return hr;
+            hr = composition->EnumCompositions(&enumerator.p); if (FAILED(hr)) return hr;
+            for (UINT i = 0; i < 16; ++i) {
+                Com<ITfCompositionView> view;
+                ULONG fetched = 0;
+                hr = enumerator->Next(1, &view.p, &fetched);
+                if (FAILED(hr)) return hr;
+                if (!fetched || !view.p) return S_OK;
+                ++total;
+                CLSID owner{};
+                hr = view->GetOwnerClsid(&owner); if (FAILED(hr)) return hr;
+                if (!IsEqualGUID(owner, numpad9::ime::kClsid)) continue;
+                Com<ITfRange> range;
+                hr = view->GetRange(&range.p); if (FAILED(hr)) return hr;
+                wchar_t buffer[256]{}; ULONG length = 0;
+                hr = range->GetText(cookie, 0, buffer, 255, &length); if (FAILED(hr)) return hr;
+                own.emplace_back(buffer, length);
+            }
+            return E_UNEXPECTED;
+        } catch (...) { return E_OUTOFMEMORY; }
+    }
+};
+
+bool InputChecks(ITfThreadMgr* thread, ITfKeystrokeMgr* keys, TfClientId client, HWND edit) {
+    auto error = [](const char* operation, HRESULT hr = E_FAIL) {
+        std::cerr << operation << ": 0x" << std::hex << hr << '\n'; return false;
+    };
+    auto textEquals = [&](const wchar_t* expected, const char* operation) {
+        wchar_t buffer[512]{}; GetWindowTextW(edit, buffer, 512);
+        if (std::wcscmp(buffer, expected) != 0) {
+            std::cerr << operation << ": RichEdit text mismatch (UTF16 length="
+                << std::dec << std::wcslen(buffer) << ")\n"; return false;
+        }
+        return true;
+    };
+    auto compositionEquals = [&](const wchar_t* expected, const char* operation) {
+        Com<ITfDocumentMgr> document; Com<ITfContext> context;
+        HRESULT hr = thread->GetFocus(&document.p);
+        if (hr != S_OK || !document.p) return error(operation, hr);
+        hr = document->GetTop(&context.p);
+        if (hr != S_OK || !context.p) return error(operation, hr);
+        Com<CompositionRead> session; session.p = new (std::nothrow) CompositionRead(context.p);
+        if (!session.p) return error(operation, E_OUTOFMEMORY);
+        HRESULT edited = E_FAIL;
+        hr = context->RequestEditSession(client, session.p, TF_ES_SYNC | TF_ES_READ, &edited);
+        if (hr != S_OK || edited != S_OK) return error(operation, FAILED(hr) ? hr : edited);
+        const bool matches = expected ? session->total == 1 && session->own.size() == 1 && session->own[0] == expected
+                                      : session->total == 0 && session->own.empty();
+        if (!matches) {
+            std::cerr << operation << ": actual TSF compositions=" << std::dec << session->total
+                << ", owned=" << session->own.size() << '\n'; return false;
+        }
+        return true;
+    };
+    auto logCompartments = [&]() {
+        Com<ITfDocumentMgr> document; Com<ITfContext> context;
+        thread->GetFocus(&document.p); if (document.p) document->GetTop(&context.p);
+        for (UINT owner = 0; owner < 2; ++owner) {
+            Com<ITfCompartmentMgr> compartments;
+            IUnknown* object = owner == 0 ? static_cast<IUnknown*>(thread) : static_cast<IUnknown*>(context.p);
+            if (!object || FAILED(object->QueryInterface(IID_ITfCompartmentMgr, compartments.out()))) continue;
+            const GUID* guids[] = {&GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &GUID_COMPARTMENT_KEYBOARD_DISABLED,
+                &GUID_COMPARTMENT_EMPTYCONTEXT};
+            const char* names[] = {"openClose", "disabled", "emptyContext"};
+            for (UINT i = 0; i < 3; ++i) {
+                Com<ITfCompartment> compartment; VARIANT value; VariantInit(&value);
+                HRESULT hr = compartments->GetCompartment(*guids[i], &compartment.p);
+                if (SUCCEEDED(hr) && compartment.p) hr = compartment->GetValue(&value);
+                std::cerr << (owner == 0 ? "Thread " : "Context ") << names[i] << ": hr=0x"
+                    << std::hex << hr << ", vt=" << value.vt;
+                if (value.vt == VT_I4) std::cerr << ", value=" << value.lVal;
+                std::cerr << '\n'; VariantClear(&value);
+            }
+        }
+    };
+    auto key = [&](UINT vk, UINT scan, bool extended = false, bool expected = true) {
+        const LPARAM down = static_cast<LPARAM>(1U | ((scan & 0xffU) << 16) | (extended ? 0x01000000U : 0));
+        BOOL eaten = FALSE;
+        HRESULT hr = keys->TestKeyDown(vk, down, &eaten);
+        if (hr != S_OK || (eaten != FALSE) != expected) {
+            std::cerr << "TSF TestKeyDown vk=0x" << std::hex << vk << ", scan=0x" << scan
+                << ", extended=" << extended << ", hr=0x" << hr << ", eaten=" << eaten << '\n';
+            logCompartments(); return false;
+        }
+        if (!expected) return true; // A normal application would dispatch this key itself.
+        eaten = FALSE; hr = keys->KeyDown(vk, down, &eaten);
+        if (hr != S_OK || !eaten) {
+            std::cerr << "TSF KeyDown vk=0x" << std::hex << vk << ", hr=0x" << hr << ", eaten=" << eaten << '\n';
+            logCompartments(); return false;
+        }
+        const LPARAM up = down | static_cast<LPARAM>(0xc0000000U);
+        eaten = FALSE; hr = keys->TestKeyUp(vk, up, &eaten);
+        if (hr != S_OK || !eaten) return error("Consumed key's TestKeyUp", hr);
+        eaten = FALSE; hr = keys->KeyUp(vk, up, &eaten);
+        if (hr != S_OK || !eaten) return error("Consumed key's KeyUp", hr);
+        Pump(15); return true;
+    };
+    auto candidate = [&]() -> ITfCandidateListUIElement* {
+        Com<ITfUIElementMgr> ui; Com<IEnumTfUIElements> enumerator;
+        if (thread->QueryInterface(numpad9::ime::kIidUiElementMgr, ui.out()) != S_OK ||
+            ui->EnumUIElements(&enumerator.p) != S_OK || !enumerator.p) return nullptr;
+        for (UINT i = 0; i < 128; ++i) {
+            Com<ITfUIElement> element; ULONG fetched = 0;
+            if (enumerator->Next(1, &element.p, &fetched) != S_OK || !fetched || !element.p) break;
+            GUID guid{};
+            if (element->GetGUID(&guid) != S_OK || !IsEqualGUID(guid, numpad9::ime::kCandidateUi)) continue;
+            ITfCandidateListUIElement* found = nullptr;
+            if (element->QueryInterface(numpad9::ime::kIidCandidateList, reinterpret_cast<void**>(&found)) == S_OK) return found;
+        }
+        return nullptr;
+    };
+    auto selectNihao = [&]() {
+        Com<ITfCandidateListUIElement> list; list.p = candidate();
+        if (!list.p) return error("Published TSF candidate list missing");
+        UINT count = 0, selected = 0, wanted = 0; bool found = false;
+        if (list->GetCount(&count) != S_OK || count == 0 || count > 100 || list->GetSelection(&selected) != S_OK)
+            return error("Candidate list count/selection");
+        for (UINT i = 0; i < count; ++i) {
+            BSTR value = nullptr;
+            const HRESULT hr = list->GetString(i, &value);
+            if (hr != S_OK || !value) { if (value) SysFreeString(value); return error("Candidate text", hr); }
+            if (std::wstring(value, SysStringLen(value)) == L"你好") { wanted = i; found = true; }
+            SysFreeString(value);
+        }
+        if (!found) return error("Actual installed dictionary candidate 你好 missing");
+        // Exercise real candidate movement even if 你好 is already first.
+        const UINT original = selected;
+        if (!key(VK_MULTIPLY, 0x37)) return false;
+        if (list->GetSelection(&selected) != S_OK || selected != (original + 1) % count)
+            return error("Next candidate selection");
+        if (!key(VK_LEFT, 0x4b, true)) return false;
+        if (list->GetSelection(&selected) != S_OK || selected != original) return error("Previous candidate selection");
+        for (UINT i = 0; selected != wanted && i < count; ++i) {
+            if (!key(VK_MULTIPLY, 0x37) || list->GetSelection(&selected) != S_OK) return false;
+        }
+        if (selected != wanted) return error("Select actual 你好 candidate");
+        return true;
+    };
+
+    SetWindowTextW(edit, L""); SetFocus(edit); Pump(40);
+    if (!compositionEquals(nullptr, "Initially no composition") ||
+        !key('6', 0x07, false, false) || !key(VK_RIGHT, 0x4d, true, false) ||
+        !textEquals(L"", "Ordinary keys passed through")) return false;
+    const UINT physical[] = {VK_NUMPAD6, VK_NUMPAD4, VK_NUMPAD4, VK_NUMPAD8, VK_NUMPAD6};
+    const UINT scans[] = {0x4d, 0x4b, 0x4b, 0x48, 0x4d};
+    const wchar_t* prefixes[] = {L"6", L"64", L"644", L"6442", L"64426"};
+    for (UINT i = 0; i < 5; ++i) if (!key(physical[i], scans[i]) ||
+        !textEquals(prefixes[i], "Phone layout visible preedit") ||
+        !compositionEquals(prefixes[i], "Actual TSF phone-layout composition")) return false;
+    if (!key(VK_BACK, 0x0e) || !textEquals(L"6442", "Backspace preedit") ||
+        !compositionEquals(L"6442", "Backspace composition") || !key(VK_NUMPAD6, 0x4d) ||
+        !selectNihao() || !key(VK_SPACE, 0x39) || !textEquals(L"你好", "Space commits actual selected candidate") ||
+        !compositionEquals(nullptr, "Commit ends actual composition")) return false;
+    {
+        Com<ITfCandidateListUIElement> ended; ended.p = candidate();
+        if (ended.p) return error("Candidate UI element retained after commit");
+    }
+    const wchar_t* baseline = L"left replace right";
+    SetWindowTextW(edit, baseline); CHARRANGE selection{5, 12};
+    SendMessageW(edit, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selection)); Pump(30);
+    if (!key(VK_NUMPAD6, 0x4d) || !textEquals(L"left 6 right", "Compose over selected text") ||
+        !compositionEquals(L"6", "Selection replacement is a composition") ||
+        !key(VK_ESCAPE, 0x01) || !textEquals(baseline, "Escape restores original selected text") ||
+        !compositionEquals(nullptr, "Escape ends composition")) return false;
+    SetWindowTextW(edit, L""); Pump(30);
+    // Windows uses nonextended navigation VKs for the same physical keypad
+    // positions with Num Lock off. Dedicated extended arrows remain distinct.
+    const UINT unlocked[] = {VK_RIGHT, VK_LEFT, VK_LEFT, VK_UP, VK_RIGHT};
+    for (UINT i = 0; i < 5; ++i) if (!key(unlocked[i], scans[i]) ||
+        !compositionEquals(prefixes[i], "Num Lock-off actual composition")) return false;
+    if (!selectNihao() || !key(VK_RETURN, 0x1c) || !textEquals(L"你好", "Num Lock-off Enter commit") ||
+        !compositionEquals(nullptr, "Num Lock-off composition ended")) return false;
+    // Turning the IME off while this same editor keeps focus must release its
+    // existing composition/UI and preserve raw preedit, not trap subsequent
+    // numeric input or silently replace it with a selected candidate.
+    for (UINT scenario = 0; scenario < 2; ++scenario) {
+        SetWindowTextW(edit, L""); Pump(30);
+        if (!key(VK_NUMPAD6, 0x4d) || !compositionEquals(L"6", "Composition before compartment disable")) return false;
+        Com<ITfCompartmentMgr> compartments;
+        Com<ITfDocumentMgr> document; Com<ITfContext> context;
+        HRESULT hr;
+        if (scenario == 0) hr = thread->QueryInterface(IID_ITfCompartmentMgr, compartments.out());
+        else {
+            hr = thread->GetFocus(&document.p);
+            if (hr == S_OK && document.p) hr = document->GetTop(&context.p);
+            if (hr == S_OK && context.p) hr = context->QueryInterface(IID_ITfCompartmentMgr, compartments.out());
+        }
+        if (hr != S_OK || !compartments.p) return error("Disable compartment manager", hr);
+        const GUID& guid = scenario == 0 ? GUID_COMPARTMENT_KEYBOARD_OPENCLOSE : GUID_COMPARTMENT_KEYBOARD_DISABLED;
+        Com<ITfCompartment> compartment;
+        hr = compartments->GetCompartment(guid, &compartment.p);
+        if (hr != S_OK || !compartment.p) return error("Get disable compartment", hr);
+        VARIANT original; VariantInit(&original);
+        hr = compartment->GetValue(&original);
+        if (FAILED(hr)) { VariantClear(&original); return error("Read original disable compartment", hr); }
+        VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = scenario == 0 ? 0 : 1;
+        hr = compartment->SetValue(client, &value);
+        bool passed = hr == S_OK;
+        if (passed) {
+            Pump(200);
+            passed = compositionEquals(nullptr, "Disabling ends actual owned composition") &&
+                textEquals(L"6", "Disabling preserves raw preedit") && key(VK_NUMPAD6, 0x4d, false, false);
+            Com<ITfCandidateListUIElement> closed; closed.p = candidate();
+            if (closed.p) { passed = false; error("Disabling leaves a published candidate UI"); }
+        } else error("Set disable compartment", hr);
+        const HRESULT restored = original.vt == VT_EMPTY ? compartments->ClearCompartment(client, guid)
+                                                        : compartment->SetValue(client, &original);
+        VariantClear(&original); Pump(100);
+        if (restored != S_OK) return error("Restore original input compartment", restored);
+        if (!passed) return false;
+        SetWindowTextW(edit, L""); Pump(30);
+        if (!key(VK_NUMPAD6, 0x4d) || !compositionEquals(L"6", "Re-enabled composition") ||
+            !key(VK_ESCAPE, 0x01) || !compositionEquals(nullptr, "Re-enabled cancel")) return false;
+    }
+    std::cout << "Real TSF key dispatch, phone/Num Lock-off compositions, candidate selection, commits, selection cancellation and disabled-context cleanup passed.\n";
+    return true;
+}
+
 int RegisteredSmoke() {
     Com<ITfThreadMgr> thread;
     Com<ITfInputProcessorProfiles> profiles;
@@ -71,6 +372,15 @@ int RegisteredSmoke() {
     if (!check(profiles->IsEnabledLanguageProfile(numpad9::ime::kClsid,
         numpad9::ime::kLanguage, numpad9::ime::kProfile, &previouslyEnabled),
         "Installed profile enablement")) return result;
+    const HKL previousLayout = GetKeyboardLayout(0);
+    HKL chineseLayout = nullptr;
+    bool newlyLoadedLayout = false;
+    TF_INPUTPROCESSORPROFILE installed{};
+    const HRESULT installedResult = manager->GetProfile(TF_PROFILETYPE_INPUTPROCESSOR,
+        numpad9::ime::kLanguage, numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr, &installed);
+    std::cerr << "Installed own profile: hr=0x" << std::hex << installedResult
+        << ", flags=0x" << installed.dwFlags << ", caps=0x" << installed.dwCaps << '\n';
+    LogGuid("installedCategory", installed.catid);
 
     TfClientId client = 0;
     if (!check(thread->Activate(&client), "Activate TSF host thread")) return result;
@@ -94,6 +404,12 @@ int RegisteredSmoke() {
                 TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE),
                 "Queue installed Numpad9 profile") &&
             check(profiles->ChangeCurrentLanguage(numpad9::ime::kLanguage), "Select test input language")) {
+            LogInputState("After TSF language change", profiles.p, manager.p, keys.p);
+            if (check(SelectChineseLayout(chineseLayout, newlyLoadedLayout), "Activate actual Chinese thread keyboard layout") &&
+                check(manager->ActivateProfile(TF_PROFILETYPE_INPUTPROCESSOR, numpad9::ime::kLanguage,
+                    numpad9::ime::kClsid, numpad9::ime::kProfile, nullptr, TF_IPPMF_FORPROCESS | TF_IPPMF_ENABLEPROFILE),
+                    "Activate installed profile after native language selection")) {
+            LogInputState("After HKL and exact TSF profile activation", profiles.p, manager.p, keys.p);
             bool active = false;
             const ULONGLONG deadline = GetTickCount64() + 3000;
             do {
@@ -138,11 +454,18 @@ int RegisteredSmoke() {
                 LogGuid("selectedCLSID", selected.clsid); LogGuid("selectedProfile", selected.guidProfile);
                 LogGuid("foregroundCLSID", foreground);
                 result = 12;
+            } else if (!InputChecks(thread.p, keys.p, client, edit)) {
+                result = 13;
+            }
             }
         }
     }
     // Always restore process state and the user's existing enabled flag, also
     // on activation failure. Failure to restore is a test failure itself.
+    if (previousLayout && chineseLayout && !ActivateKeyboardLayout(previousLayout, KLF_SETFORPROCESS)) {
+        const DWORD code = GetLastError(); check(code ? HRESULT_FROM_WIN32(code) : E_FAIL, "Restore original thread keyboard layout");
+    }
+    Pump(100);
     if (hadLanguage) check(profiles->ChangeCurrentLanguage(previousLanguage), "Restore input language");
     if (hadPrevious) check(manager->ActivateProfile(previous.dwProfileType, previous.langid,
         previous.clsid, previous.guidProfile, previous.hkl, TF_IPPMF_FORPROCESS), "Restore process input profile");
@@ -153,6 +476,9 @@ int RegisteredSmoke() {
     }
     check(profiles->EnableLanguageProfile(numpad9::ime::kClsid, numpad9::ime::kLanguage,
         numpad9::ime::kProfile, previouslyEnabled), "Restore user profile enablement");
+    if (newlyLoadedLayout && chineseLayout && !UnloadKeyboardLayout(chineseLayout)) {
+        const DWORD code = GetLastError(); check(code ? HRESULT_FROM_WIN32(code) : E_FAIL, "Unload test-only Chinese layout");
+    }
     if (window) DestroyWindow(window);
     Pump(100);
     check(thread->Deactivate(), "Deactivate TSF host thread");

@@ -124,7 +124,7 @@ public:
 };
 
 class Service;
-enum class Action { None, Digit, Backspace, Cancel, Commit, Space, Comma, Period, Toggle, Refresh,
+enum class Action { None, Digit, Backspace, Cancel, Commit, Space, Comma, Period, Toggle, Refresh, DiscardDisabled,
                     Next, Previous, PageNext, PagePrevious, CommitAndPass, SetSelection };
 struct Command { Action action = Action::None; char digit = 0; UINT index = 0; bool keepSelection = false; };
 
@@ -224,7 +224,14 @@ public:
 
 class Service final : public RefCount, public ITfTextInputProcessorEx, public ITfKeyEventSink,
                       public ITfThreadMgrEventSink, public ITfCompositionSink,
-                      public ITfDisplayAttributeProvider, public ITfTextEditSink, public ITfTextLayoutSink {
+                      public ITfDisplayAttributeProvider, public ITfTextEditSink, public ITfTextLayoutSink,
+                      public ITfCompartmentEventSink {
+    struct CompartmentSubscription {
+        ComPtr<ITfSource> source;
+        DWORD cookie = kInvalidCookie;
+    };
+    std::vector<CompartmentSubscription> threadCompartments_;
+    std::vector<CompartmentSubscription> contextCompartments_;
     ComPtr<ITfThreadMgr> thread_;
     ComPtr<ITfKeystrokeMgr> keys_;
     ComPtr<ITfSource> threadSource_;
@@ -251,6 +258,7 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     bool uiShown_ = true;
     bool dictionaryReady_ = false;
     bool refreshPending_ = false;
+    bool discarding_ = false;
     std::array<bool, 256> consumed_{};
     Engine engine_;
     std::vector<Candidate> candidates_;
@@ -260,6 +268,55 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     RECT lastCaret_{};
     HWND lastOwner_ = nullptr;
     bool hasCaret_ = false;
+
+    void UnwatchCompartments(std::vector<CompartmentSubscription>& subscriptions) {
+        // Move the list first so a reentrant notification cannot unadvise a
+        // subscription twice. Sources keep their compartments alive until done.
+        auto previous = std::move(subscriptions);
+        subscriptions.clear();
+        for (auto& subscription : previous)
+            if (subscription.source && subscription.cookie != kInvalidCookie)
+                subscription.source->UnadviseSink(subscription.cookie);
+    }
+    HRESULT WatchCompartments(IUnknown* owner, std::vector<CompartmentSubscription>& subscriptions) try {
+        UnwatchCompartments(subscriptions);
+        ComPtr<ITfCompartmentMgr> manager;
+        HRESULT hr = owner->QueryInterface(IID_ITfCompartmentMgr, reinterpret_cast<void**>(manager.put()));
+        if (FAILED(hr)) return hr;
+        subscriptions.reserve(3);
+        for (const GUID* guid : {&GUID_COMPARTMENT_KEYBOARD_DISABLED, &GUID_COMPARTMENT_EMPTYCONTEXT,
+                                 &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE}) {
+            ComPtr<ITfCompartment> compartment;
+            CompartmentSubscription subscription;
+            hr = manager->GetCompartment(*guid, compartment.put());
+            if (SUCCEEDED(hr)) hr = compartment->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(subscription.source.put()));
+            if (SUCCEEDED(hr)) hr = subscription.source->AdviseSink(IID_ITfCompartmentEventSink,
+                static_cast<ITfCompartmentEventSink*>(this), &subscription.cookie);
+            if (FAILED(hr)) { UnwatchCompartments(subscriptions); return hr; }
+            subscriptions.push_back(std::move(subscription));
+        }
+        return S_OK;
+    } catch (const std::bad_alloc&) { UnwatchCompartments(subscriptions); return E_OUTOFMEMORY; }
+      catch (...) { UnwatchCompartments(subscriptions); return E_FAIL; }
+    void DiscardForDisabledInput() {
+        if (discarding_) return;
+        struct Guard { bool& flag; explicit Guard(bool& value) : flag(value) { flag = true; }
+                       ~Guard() { flag = false; } } guard(discarding_);
+        window_.Hide();
+        if (!composition_ || !context_) return;
+        ComPtr<ITfContext> context(context_.get());
+        ComPtr<ITfComposition> composition(composition_.get());
+        auto session = new (std::nothrow) TerminationSession(context.get(), composition.get());
+        if (session) {
+            HRESULT result = E_FAIL;
+            // A compartment notification may arrive inside another edit lock.
+            // End only this old composition later; never replace text or move
+            // the selection after the user has disabled input conversion.
+            context->RequestEditSession(client_, session, TF_ES_ASYNC | TF_ES_READWRITE, &result);
+            session->Release();
+        }
+        ClearState();
+    }
 
     bool CompartmentsAllowed(ITfContext* context) const {
         if (!context || !thread_ || secure_ || !foreground_) return false;
@@ -321,9 +378,11 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
         ComPtr<ITfContextComposition> manager;
         hr = context->QueryInterface(IID_ITfContextComposition, reinterpret_cast<void**>(manager.put()));
         if (FAILED(hr)) return hr;
+        hr = WatchCompartments(context, contextCompartments_);
+        if (FAILED(hr)) return hr;
         ComPtr<ITfComposition> created;
         hr = manager->StartComposition(cookie, range.get(), static_cast<ITfCompositionSink*>(this), created.put());
-        if (FAILED(hr) || !created) return FAILED(hr) ? hr : E_FAIL;
+        if (FAILED(hr) || !created) { UnwatchCompartments(contextCompartments_); return FAILED(hr) ? hr : E_FAIL; }
         context_ = ComPtr<ITfContext>(context); composition_ = std::move(created);
         context_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(contextSource_.put()));
         if (contextSource_) contextSource_->AdviseSink(IID_ITfTextEditSink, static_cast<ITfTextEditSink*>(this), &contextCookie_);
@@ -349,6 +408,7 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     void ClearState() {
         ++epoch_;
         CloseUI();
+        UnwatchCompartments(contextCompartments_);
         if (contextSource_ && contextCookie_ != kInvalidCookie) contextSource_->UnadviseSink(contextCookie_);
         if (contextSource_ && layoutCookie_ != kInvalidCookie) contextSource_->UnadviseSink(layoutCookie_);
         layoutCookie_ = kInvalidCookie; refreshPending_ = false;
@@ -366,6 +426,7 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     }
     void UpdateUI(TfEditCookie cookie) {
         if (!composition_ || !context_) { CloseUI(); return; }
+        if (!CompartmentsAllowed(context_.get())) { window_.Hide(); return; }
         if (!element_ && uiManager_) {
             ComPtr<ITfDocumentMgr> document;
             if (SUCCEEDED(context_->GetDocumentMgr(document.put()))) {
@@ -471,6 +532,7 @@ public:
         else if (iid == kIidDisplayAttributeProvider) *result = static_cast<ITfDisplayAttributeProvider*>(this);
         else if (iid == IID_ITfTextEditSink) *result = static_cast<ITfTextEditSink*>(this);
         else if (iid == kIidTextLayoutSink) *result = static_cast<ITfTextLayoutSink*>(this);
+        else if (iid == IID_ITfCompartmentEventSink) *result = static_cast<ITfCompartmentEventSink*>(this);
         else return E_NOINTERFACE;
         AddRef(); return S_OK;
     }
@@ -488,6 +550,7 @@ public:
         if (SUCCEEDED(hr)) keyAdvised_ = true;
         if (SUCCEEDED(hr)) hr = thread_->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(threadSource_.put()));
         if (SUCCEEDED(hr)) hr = threadSource_->AdviseSink(IID_ITfThreadMgrEventSink, static_cast<ITfThreadMgrEventSink*>(this), &threadCookie_);
+        if (SUCCEEDED(hr)) hr = WatchCompartments(thread_.get(), threadCompartments_);
         thread_->QueryInterface(kIidUiElementMgr, reinterpret_cast<void**>(uiManager_.put()));
         if (uiOnly_ && !uiManager_) hr = E_NOINTERFACE;
         if (FAILED(hr)) { Deactivate(); return hr; }
@@ -530,6 +593,8 @@ public:
         keyAdvised_ = false;
         if (threadSource_ && threadCookie_ != kInvalidCookie) threadSource_->UnadviseSink(threadCookie_);
         threadCookie_ = kInvalidCookie;
+        UnwatchCompartments(contextCompartments_);
+        UnwatchCompartments(threadCompartments_);
         CloseUI(); window_.Destroy();
         if (modeButton_) {
             modeButton_->Detach();
@@ -543,6 +608,21 @@ public:
         return S_OK;
     }
     STDMETHODIMP OnSetFocus(BOOL foreground) override { foreground_ = foreground != FALSE; if (!foreground_) EndForFocus(); return S_OK; }
+    STDMETHODIMP OnChange(REFGUID) override {
+        // Unadvising old-context subscriptions may release this sink while its
+        // callback is still on the stack; retain it until cleanup completes.
+        ComPtr<ITfCompartmentEventSink> keepAlive(static_cast<ITfCompartmentEventSink*>(this));
+        try {
+            if (composition_ && context_ && !CompartmentsAllowed(context_.get())) {
+                window_.Hide();
+                // A host can change a compartment reentrantly during SetText.
+                // Do not clear pointers that its current edit session still uses.
+                if (changing_ || finishing_) return Request(context_.get(), {Action::DiscardDisabled}, true);
+                DiscardForDisabledInput();
+            }
+            return S_OK;
+        } catch (const std::bad_alloc&) { return E_OUTOFMEMORY; } catch (...) { return E_FAIL; }
+    }
     STDMETHODIMP OnTestKeyDown(ITfContext* context, WPARAM key, LPARAM parameter, BOOL* eaten) override {
         if (!eaten) return E_POINTER;
         *eaten = FALSE;
@@ -623,11 +703,16 @@ public:
         if (!session) return E_OUTOFMEMORY;
         HRESULT result = E_FAIL;
         const HRESULT hr = context->RequestEditSession(client_, session,
-            (asynchronous ? TF_ES_ASYNC : TF_ES_SYNC) | (command.action == Action::Refresh ? TF_ES_READ : TF_ES_READWRITE), &result);
+            (asynchronous ? TF_ES_ASYNC : TF_ES_SYNC) |
+            ((command.action == Action::Refresh || command.action == Action::DiscardDisabled) ? TF_ES_READ : TF_ES_READWRITE), &result);
         session->Release(); return FAILED(hr) ? hr : result;
     }
     HRESULT Apply(ITfContext* context, TfEditCookie cookie, Command command, std::uint64_t epoch) {
         if (epoch != epoch_) return S_FALSE;
+        if (command.action == Action::DiscardDisabled) {
+            if (composition_ && context_.get() == context && !CompartmentsAllowed(context)) DiscardForDisabledInput();
+            return S_OK;
+        }
         if (command.action == Action::Refresh) {
             refreshPending_ = false;
             if (composition_ && context_.get() == context && CompartmentsAllowed(context) && ScopeAllowed(context, cookie)) UpdateUI(cookie);
