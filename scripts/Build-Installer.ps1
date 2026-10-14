@@ -40,7 +40,7 @@ foreach ($relative in @('x64/Numpad9.exe', 'x64/Numpad9Ime.dll', 'x86/Numpad9Ime
 }
 $metadata = Join-Path $root 'artifacts/metadata'
 New-Item -ItemType Directory -Force -Path $metadata | Out-Null
-$policy = Get-Content -Raw -LiteralPath (Join-Path $root 'docs/store/privacy-policy.md')
+$policy = Get-Content -Raw -LiteralPath (Join-Path $root 'docs/privacy-exe.template.md')
 $policy = $policy.Replace('- 真实发行人 / Legal publisher: **REQUIRED BEFORE PUBLICATION**', "- 真实发行人 / Legal publisher: $Publisher")
 $policy = $policy.Replace('- 隐私及支持联系方式 / Privacy and support contact: **REQUIRED BEFORE PUBLICATION**', "- 隐私及支持联系方式 / Privacy and support contact: $Contact")
 $policy = $policy.Replace('This installed-policy template is a publication draft until those two fields are completed. Partner Center EXE properties accept privacy-policy text directly; a hosted HTTPS policy is an alternative. Publishing this unresolved draft is not acceptable.', 'Publisher and support details above apply to this installer build.')
@@ -59,7 +59,7 @@ if ($UnsignedDevelopment) {
     foreach ($file in Get-ChildItem $payload -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll' }) {
         if ((Get-AuthenticodeSignature -LiteralPath $file.FullName).Status -ne 'Valid') { throw 'External signing requires already-signed, trusted payload PE files.' }
     }
-    if (-not $SignedUninstallerDirectory -or -not (Test-Path $SignedUninstallerDirectory)) { throw 'Provide the existing exact pre-signed Inno uninstaller cache directory. See mac-signing.md for bootstrap.' }
+    if (-not $SignedUninstallerDirectory -or -not (Test-Path $SignedUninstallerDirectory)) { throw 'Provide the existing exact pre-signed Inno uninstaller cache directory. See docs/signing.md for bootstrap.' }
     $SignedUninstallerDirectory = (Get-Item -LiteralPath $SignedUninstallerDirectory).FullName
     $cache = @(Get-ChildItem -LiteralPath $SignedUninstallerDirectory -File)
     if (-not $cache.Count) { throw 'Pre-signed uninstaller cache is empty.' }

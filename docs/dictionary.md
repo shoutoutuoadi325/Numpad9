@@ -57,14 +57,6 @@ without storing users' typing history. It does not offer learned personal ranks,
 cloud prediction or arbitrary whole-sentence language-model completion. Users
 can compose sentences by confirming successive words or phrases.
 
-The physical keypad is read by position: `7 8 9` means phone `1 2 3`, the middle
-row remains `4 5 6`, and `1 2 3` means phone `7 8 9`. Pinyin letters use the phone
-ABC/DEF layout, with `v` for `ü`. Only logical digits `2` through `9` extend an
-engine composition. Punctuation and committing the selected phrase belong to
-the native Windows input integration. Dedicated navigation keys are excluded
-by marking extended scan codes with `0x100`; NumLock-off keypad navigation scan
-codes still map by keypad position.
-
 The C++17 engine accepts at most 64 digits, returns at most 100 candidates,
 loads at most 500,000 records and rejects files larger than 64 MiB. It validates
 UTF-8, Unicode scalar values, TSV shape, rank overflow and record lengths.
@@ -72,18 +64,3 @@ Failed loading preserves the previous dictionary and composition. Candidate
 lookup binary-searches the digit prefix range and retains only the requested
 best candidates. The runtime never writes a dictionary, composition or history
 to disk and performs no network access.
-
-Run the portable tests directly or through the project's CMake test target:
-
-```sh
-clang++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Isrc \
-  src/core/engine.cpp tests/core_tests.cpp -o /tmp/numpad9-core-tests
-/tmp/numpad9-core-tests data/lexicon.tsv
-```
-
-Tests cover phone orientation, NumLock-off versus extended navigation keys,
-Pinyin and English ranking, homophone collisions, prefix completion, duplicate
-readings, mode changes, input limits, corrupt/oversized dictionaries, atomic
-replacement, supplementary-plane Unicode and actual packaged common phrases.
-They also print dictionary loading time and broad-prefix query latency; timing
-is observational, so slow CI hosts do not produce flaky test failures.

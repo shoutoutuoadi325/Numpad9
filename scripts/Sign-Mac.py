@@ -2,7 +2,7 @@
 """Sign Windows PE files on macOS without passing secrets on the command line.
 
 Requires an independently trusted CA certificate and osslsigncode. This is not
-Windows trust validation or Microsoft Store certification. See mac-signing.md.
+Windows trust validation or Microsoft Store certification. See docs/signing.md.
 """
 import argparse
 import getpass

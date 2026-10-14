@@ -1,40 +1,22 @@
 # GitHub EXE 发布
 
-GitHub 分发原生 TSF EXE，当前首个公开版本为 **v0.1.0 预发行**。发行人是 **Zhiqi Zhang**，支持渠道是 [GitHub Issues](https://github.com/shoutoutuoadi325/Numpad9/issues)。此路线不需要商业代码签名证书；资产文件名和发布说明明确标记未签名，Windows 可能显示未知发布者提示。
+GitHub 分发传统 TSF EXE，发行人为 Zhiqi Zhang，支持渠道为 [GitHub Issues](https://github.com/shoutoutuoadi325/Numpad9/issues)。[v0.1.0](https://github.com/shoutoutuoadi325/Numpad9/releases/tag/v0.1.0) 是公开预发行；Microsoft Store 使用独立的 [MSIX 路线](store/msix.md)。
 
-每次发布包含：
+## 发布资产
 
-- `Numpad9-<version>-x64-UNSIGNED.exe`：真实发行元数据的离线安装器，包含 x64 主程序和 x64/x86 TSF DLL。
-- `Numpad9-<version>-source.zip`：与该 tag 对应的完整源码、词典原始来源、许可、重建工具及构建脚本。
+- `Numpad9-<version>-x64-UNSIGNED.exe`：含 x64 主程序和 x64/x86 TSF DLL 的离线安装器。
+- `Numpad9-<version>-source.zip`：与 tag 对应的完整源码、词典来源、许可及构建工具。
 - `SHA256SUMS.txt`：以上两个文件的 SHA256。
 
-测试包仍叫 `UNSIGNED-TESTING.exe`。不要把测试包重命名为公开包；公开包需要实际发行人、支持网址和对应源码下载地址，并再次检查它自己的安装与卸载。
+未签名状态在文件名和发行说明中明确标注。`UNSIGNED-TESTING.exe` 是构建产物，不重命名为公开安装器；公开包使用真实发行元数据重新构建。可选签名见 [signing.md](signing.md)。
 
-## 自动发布
+## 新版本发布
 
-`.github/workflows/windows.yml` 在 `main` 推送和 PR 时只构建检查。在 `v<major>.<minor>.<patch>` tag 推送时，或手动 `workflow_dispatch` 提供 `release_tag` 时，运行公开发布 job。已有 tag 必须指向本次实际 checkout 并匹配源码版本。首次发布可以在手动运行界面选择 `main`、填写尚不存在的 `v0.1.0`；准备阶段只记录意图，所有自动检查通过后才将新 tag 创建到精确验证的提交。源码不能有未提交修改。
+1. 同步 CMake 项目版本、Windows 版本资源和构建脚本的版本默认值，将代码提交到 `main`。
+2. 打开 GitHub Actions 的 **Windows candidate build**，选择 `main`，将 `release_tag` 填为新的 `v<major>.<minor>.<patch>`。使用已有 tag 时，它必须指向同一个提交，且尚无同名 release。
+3. 工作流构建原生载荷，以真实发行人、支持和源码地址生成公开 EXE，再生成源码包与校验文件。全部资产来自同一次运行的精确 checkout。
+4. 发布 job 创建草稿，上传并核对资产，然后公开预发行。已有 release 不覆盖，已有 tag 不移动；若 `main` 在运行期间改变，需针对新提交重新发起。
 
-EXE 与发布 job 必须使用同一次运行的相同 checkout 提交。发布 job 依赖 EXE 自动检查成功，下载同一次运行的已构建 payload，重新编译真实发行元数据的 `-UNSIGNED.exe`，并对**这个实际公开安装器**运行完整自动烟测。检查包括核心与 COM 生命周期测试、静默安装、x64/x86 系统注册和实际 TSF 激活、真实窗口、卸载及 CI 语言偏好恢复；没有人工实机 QA 门槛。
+工作流也支持 `v*` tag 推送；普通 `main` 推送和 PR 不发布 release。MSIX 构建 job 与 EXE 发布独立。运行入口为 `.github/workflows/windows.yml`，版本与资产处理分别由 `Prepare-GitHubRelease.ps1`、`Publish-GitHubRelease.ps1` 实现。
 
-仅发布 job 有 `contents: write`。它在自动检查通过后核对远端 main 未变化、已有 tag 没有指向其他提交；需要时将新 tag 创建到验证的 SHA。随后创建 GitHub 草稿，上传三个公开资产，下载回来验证 SHA256，再次核对 tag/main，最后才公开预发行。已有同名 release 不覆盖；发生错误时不公开草稿。MSIX job 独立运行，不作为 GitHub EXE 发布依赖。
-
-已有 tag 的手动发布可以选择该 tag 并填写相同 `release_tag`；首次发布选择 main。不同提交不得共用同一个版本 tag，已有 release 不覆盖。若 main 在检查期间有新提交，需要重新运行验证当前提交。此工作流发布预发行；后续稳定发行需明确调整发布策略。
-
-## 本地准备
-
-本地准备应在 Windows 上 checkout 已有版本 tag；首次缺失 tag 的创建仅允许由 main 上显式手动运行的 GitHub 工作流在检查通过后执行：
-
-```powershell
-./scripts/Prepare-GitHubRelease.ps1 -Tag v0.1.0 -Repository shoutoutuoadi325/Numpad9
-./scripts/Build-Windows.ps1
-./scripts/Build-Installer.ps1 -GitHubUnsignedRelease -Publisher 'Zhiqi Zhang' `
-    -Contact 'https://github.com/shoutoutuoadi325/Numpad9/issues' `
-    -SupportUrl 'https://github.com/shoutoutuoadi325/Numpad9/issues' `
-    -SourceUrl 'https://github.com/shoutoutuoadi325/Numpad9/releases/download/v0.1.0/Numpad9-0.1.0-source.zip'
-./scripts/Test-Installer.ps1 -Installer ./artifacts/Numpad9-0.1.0-x64-UNSIGNED.exe
-./scripts/Prepare-GitHubRelease.ps1 -Tag v0.1.0 -Repository shoutoutuoadi325/Numpad9 -Phase Finalize
-```
-
-`Test-Installer.ps1` 只用于 disposable Windows 自动检查环境，会临时登记中文用户语言偏好并恢复原设置。一般用户只运行 EXE 安装器；安装器不会替用户修改默认输入法或下载语言包。
-
-签名路线与此分开：`Validate-Release.ps1` 对受信签名包保持严格检查，未签名 GitHub 发行不会冒充已签名或通过 Microsoft Store 认证。Microsoft Store 只走独立 MSIX 路线，发布说明保留 [Store 链接](https://apps.microsoft.com/detail/9N82M2S3QS4C)，但在实际上架之前不声称能从商店下载。
+完整对应源码必须保留 GPL 和词库许可。LAF 运行配置及含授权配置的 MSIX 不上传到公开 GitHub Release。发行说明保留 [Microsoft Store 链接](https://apps.microsoft.com/detail/9N82M2S3QS4C)，下载可用性以商店页面为准。
