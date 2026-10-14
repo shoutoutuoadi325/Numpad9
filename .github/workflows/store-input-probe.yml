@@ -20,15 +20,32 @@ concurrency:
   group: store-input-probe-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile the production host with the actual input API SDK
+        shell: pwsh
+        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Numpad9-Store-Probe-Production-Host
+          path: build/windows-store/Release/Numpad9Store.exe
+          if-no-files-found: error
+          retention-days: 7
   probe:
+    needs: build
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Build the actual production Store host
-        shell: pwsh
-        run: ./scripts/Build-Msix.ps1 -DevelopmentIdentity
+      - uses: actions/download-artifact@v4
+        with:
+          name: Numpad9-Store-Probe-Production-Host
+          path: private/store-host
       - name: Check the real foreground text and keyboard harness
         shell: pwsh
         run: ./scripts/Test-StoreInput.ps1 -HarnessOnly
@@ -46,7 +63,7 @@ jobs:
             @{ featureId='com.microsoft.windows.textinputmethod'; token=$env:NUMPAD9_LAF_TOKEN;
                attestation="$publisherId has registered their use of com.microsoft.windows.textinputmethod with Microsoft and agrees to the terms of use.";
                inputProfile='' } | ConvertTo-Json | Set-Content private/store-probe/input-access.json -Encoding UTF8
-            ./scripts/Build-Msix.ps1 -SkipBuild -IdentityName $identity.identityName -PublisherDN $identity.publisherDN -PublisherDisplayName $identity.publisherDisplayName -RuntimeConfigurationPath private/store-probe/input-access.json -PolicyTextPath docs/store/privacy-policy-msix.md
+            ./scripts/Build-Msix.ps1 -SkipBuild -HostPath private/store-host/Numpad9Store.exe -IdentityName $identity.identityName -PublisherDN $identity.publisherDN -PublisherDisplayName $identity.publisherDisplayName -RuntimeConfigurationPath private/store-probe/input-access.json -PolicyTextPath docs/store/privacy-policy-msix.md
             ./scripts/Test-StoreInput.ps1 -PackagePath artifacts/Numpad9-0.1.0.0-x64-STORE-UPLOAD.msix
           } finally {
             Remove-Item -LiteralPath private/store-probe -Recurse -Force -ErrorAction SilentlyContinue
