@@ -10,6 +10,7 @@ param(
     [string]$RuntimeConfigurationPath,
     [string]$PolicyTextPath,
     [string]$Configuration = 'Release',
+    [ValidateSet('Visual Studio 17 2022', 'Visual Studio 18 2026')][string]$Generator,
     [string]$MakeAppx
 )
 $ErrorActionPreference = 'Stop'
@@ -69,7 +70,17 @@ if (-not $MakeAppx) {
 $MakeAppx = (Get-Item -LiteralPath $MakeAppx).FullName
 $build = Join-Path $root 'build/windows-store'
 if (-not $SkipBuild) {
-    & cmake -S $root -B $build -G 'Visual Studio 17 2022' -A x64 '-DCMAKE_SYSTEM_VERSION=10.0.26100.0' '-DNUMPAD9_BUILD_STORE=ON' '-DNUMPAD9_BUILD_APP=OFF' '-DBUILD_TESTING=ON'
+    if (-not $Generator) {
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+        $visualStudioVersion = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+        if ($LASTEXITCODE -ne 0 -or -not $visualStudioVersion) { throw 'Install Visual Studio C++ build tools or provide an installed CMake Generator.' }
+        $Generator = switch (([version]$visualStudioVersion.Trim()).Major) {
+            17 { 'Visual Studio 17 2022' }
+            18 { 'Visual Studio 18 2026' }
+            default { throw 'This script supports Visual Studio 2022 or 2026.' }
+        }
+    }
+    & cmake -S $root -B $build -G $Generator -A x64 '-DCMAKE_SYSTEM_VERSION=10.0.26100.0' '-DNUMPAD9_BUILD_STORE=ON' '-DNUMPAD9_BUILD_APP=OFF' '-DBUILD_TESTING=ON'
     if ($LASTEXITCODE -ne 0) { throw 'Store host CMake configure failed.' }
     & cmake --build $build --config $Configuration --target Numpad9Store --parallel
     if ($LASTEXITCODE -ne 0) { throw 'Store host native build failed.' }
