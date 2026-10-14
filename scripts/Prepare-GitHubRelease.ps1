@@ -41,7 +41,11 @@ if ($env:OS -ne 'Windows_NT') { throw 'Final artifact checks require Windows.' }
 $installer = Join-Path $root "artifacts/Numpad9-$version-x64-UNSIGNED.exe"
 $installerItem = Get-Item -LiteralPath $installer
 if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'NotSigned') { throw 'The GitHub unsigned route requires an actually unsigned installer.' }
-if ($installerItem.VersionInfo.CompanyName -ne 'Zhiqi Zhang' -or $installerItem.VersionInfo.ProductVersion -ne $version) { throw 'Public installer publisher/version metadata differs from the release plan.' }
+$versionInfo = $installerItem.VersionInfo
+$binaryProductVersion = '{0}.{1}.{2}.{3}' -f $versionInfo.ProductMajorPart, $versionInfo.ProductMinorPart, $versionInfo.ProductBuildPart, $versionInfo.ProductPrivatePart
+if ($versionInfo.CompanyName -cne 'Zhiqi Zhang' -or $versionInfo.ProductVersion -cne $version -or $binaryProductVersion -cne "$version.0") {
+    throw "Public installer metadata differs from the release plan. CompanyName='$($versionInfo.CompanyName)'; ProductVersion='$($versionInfo.ProductVersion)'; binary ProductVersion='$binaryProductVersion'. Expected CompanyName='Zhiqi Zhang'; textual ProductVersion='$version'; binary ProductVersion='$version.0'."
+}
 $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
 $smoke = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $root 'artifacts/installer-smoke/result.json') | ConvertFrom-Json
 if (-not $smoke.passed -or $smoke.version -ne $version -or $smoke.installerSha256 -ne $installerHash -or -not $smoke.originalUserLanguagePreferencesRestored) { throw 'The exact public unsigned installer must pass the automated install/TSF/window/uninstall smoke with language preferences restored.' }
