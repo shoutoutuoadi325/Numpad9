@@ -12,7 +12,7 @@
 
 ## 下载
 
-[GitHub Releases](https://github.com/shoutoutuoadi325/Numpad9/releases) 提供未签名 EXE 预发行、完整对应源码及 SHA256。首个 `v0.1.0` 下载目前尚未发布；发布后选择 `Numpad9-0.1.0-x64-UNSIGNED.exe`。Windows 可能显示未知发布者或信任提示，安装需要管理员授权。问题反馈：[GitHub Issues](https://github.com/shoutoutuoadi325/Numpad9/issues)。
+[下载 v0.1.0](https://github.com/shoutoutuoadi325/Numpad9/releases/tag/v0.1.0)：选择 `Numpad9-0.1.0-x64-UNSIGNED.exe` 安装，页面同时提供完整对应源码和 SHA256 校验文件。此 EXE 未签名，Windows 可能显示未知发布者或信任提示，安装需要管理员授权。问题反馈：[GitHub Issues](https://github.com/shoutoutuoadi325/Numpad9/issues)。
 
 [Microsoft Store 链接](https://apps.microsoft.com/detail/9N82M2S3QS4C) 对应独立商店版本，目前尚未上架。
 
