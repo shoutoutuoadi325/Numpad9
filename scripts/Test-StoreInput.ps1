@@ -63,12 +63,13 @@ public static class Numpad9StoreInputProbe {
     [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count,Input[] inputs,int size);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr LoadLibraryW(string name);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandleW(string name);
+    [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
     [DllImport("ole32.dll")] static extern int CoInitializeEx(IntPtr reserved,uint mode);
     [DllImport("ole32.dll")] static extern void CoUninitialize();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
     public static string Read(IntPtr window) { var text=new StringBuilder(1024); GetWindowTextW(window,text,text.Capacity); return text.ToString(); }
     static IntPtr Procedure(IntPtr w,uint m,IntPtr p,IntPtr l) {
-        if(m==0x8001) { SetFocus(Edit); return IntPtr.Zero; }
+        if(m==0x8001) { SetForegroundWindow(w); SetFocus(Edit); return IntPtr.Zero; }
         if(m==0x10) { DestroyWindow(w); return IntPtr.Zero; }
         if(m==2) { PostQuitMessage(0); return IntPtr.Zero; }
         return DefWindowProcW(w,m,p,l);
@@ -97,8 +98,16 @@ public static class Numpad9StoreInputProbe {
         if(failure!=null) throw failure;
     }
     public static void Focus() {
-        ShowWindow(Window,5); SetForegroundWindow(Window); SendMessageW(Window,0x8001,IntPtr.Zero,IntPtr.Zero);
-        if(GetForegroundWindow()!=Window) throw new Exception("The test text window is not foreground; no keys sent.");
+        ShowWindow(Window,5);
+        var deadline=DateTime.UtcNow.AddSeconds(3);
+        do {
+            SendMessageW(Window,0x8001,IntPtr.Zero,IntPtr.Zero);
+            if(GetForegroundWindow()==Window) return;
+            Thread.Sleep(50);
+        } while(DateTime.UtcNow<deadline);
+        throw new Exception("The test text window is not foreground; no keys sent. Runner session="+
+            System.Diagnostics.Process.GetCurrentProcess().SessionId+", console session="+
+            WTSGetActiveConsoleSessionId()+", foreground present="+(GetForegroundWindow()!=IntPtr.Zero));
     }
     public static void Key(ushort scan) {
         if(GetForegroundWindow()!=Window) throw new Exception("Focus changed; no keys sent to another application.");
