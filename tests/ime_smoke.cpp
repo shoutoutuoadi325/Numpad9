@@ -170,8 +170,32 @@ public:
 class ScopeDiagnostic final : public ITfEditSession {
     std::atomic<ULONG> references_{1};
     ITfContext* context_;
+    void Enumerate(const char* name, const char* span, ITfReadOnlyProperty* property,
+                   ITfRange* range, TfEditCookie cookie) {
+        if (!property) return;
+        Com<IEnumTfRanges> enumerator;
+        const HRESULT listed = property->EnumRanges(cookie, &enumerator.p, range);
+        std::cerr << name << ' ' << span << ": enumHr=0x" << std::hex << listed
+            << ", enumeratorPresent=" << (enumerator.p != nullptr);
+        if (SUCCEEDED(listed) && enumerator.p) {
+            UINT total = 0;
+            for (UINT i = 0; i < 32; ++i) {
+                Com<ITfRange> entry; ULONG fetched = 0;
+                const HRESULT next = enumerator->Next(1, &entry.p, &fetched);
+                if (i == 0) std::cerr << ", firstNextHr=0x" << next << ", firstFetched=" << std::dec << fetched;
+                if (FAILED(next) || !fetched || !entry.p) break;
+                ++total;
+                VARIANT value; VariantInit(&value);
+                const HRESULT obtained = property->GetValue(cookie, entry.p, &value);
+                std::cerr << ", range" << std::dec << i << "ValueHr=0x" << std::hex << obtained << "/vt=" << value.vt;
+                VariantClear(&value);
+            }
+            std::cerr << ", enumeratedRanges=" << std::dec << total;
+        }
+        std::cerr << '\n';
+    }
     void Property(const char* name, HRESULT obtained, ITfReadOnlyProperty* property,
-                  ITfRange* selection, TfEditCookie cookie) {
+                  ITfRange* selection, ITfRange* document, TfEditCookie cookie, bool isAppProperty) {
         std::cerr << name << ": propertyHr=0x" << std::hex << obtained
             << ", propertyPresent=" << (property != nullptr);
         if (!property || !selection) { std::cerr << '\n'; return; }
@@ -189,14 +213,19 @@ class ScopeDiagnostic final : public ITfEditSession {
                 if (SUCCEEDED(fetched) && scopes && count <= 1024) {
                     std::cerr << ", scopeEnums=";
                     for (UINT i = 0; i < count && i < 32; ++i) std::cerr << static_cast<int>(scopes[i]) << ',';
+                    if (isAppProperty) declaredScopes.assign(scopes, scopes + count);
                 }
                 CoTaskMemFree(scopes);
             }
         }
         std::cerr << '\n'; VariantClear(&value);
+        Enumerate(name, "selection", property, selection, cookie);
+        Enumerate(name, "wholeDocument", property, document, cookie);
+        Enumerate(name, "allDocument(NULL)", property, nullptr, cookie);
     }
 public:
     bool ran = false;
+    std::vector<InputScope> declaredScopes;
     explicit ScopeDiagnostic(ITfContext* context) : context_(context) { context_->AddRef(); }
     ~ScopeDiagnostic() { context_->Release(); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
@@ -215,16 +244,23 @@ public:
             TF_SELECTION selected{}; ULONG count = 0;
             const HRESULT selectionResult = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selected, &count);
             Com<ITfRange> range; range.p = selected.range;
+            Com<ITfRange> document; Com<ITfRange> documentEnd;
+            const HRESULT startResult = context_->GetStart(cookie, &document.p);
+            const HRESULT endResult = context_->GetEnd(cookie, &documentEnd.p);
+            const HRESULT spanResult = SUCCEEDED(startResult) && SUCCEEDED(endResult) && document.p && documentEnd.p
+                ? document->ShiftEndToRange(cookie, documentEnd.p, TF_ANCHOR_END) : E_FAIL;
             std::cerr << "Independent scope read session: statusHr=0x" << std::hex << statusResult
                 << ", dynamicFlags=0x" << status.dwDynamicFlags << ", staticFlags=0x" << status.dwStaticFlags
                 << ", selectionHr=0x" << selectionResult << ", selections=" << std::dec << count
                 << ", rangePresent=" << (range.p != nullptr) << '\n';
+            std::cerr << "Scope full-document range: startHr=0x" << std::hex << startResult << ", endHr=0x" << endResult
+                << ", spanHr=0x" << spanResult << '\n';
             Com<ITfProperty> textProperty;
             const HRESULT textResult = context_->GetProperty(numpad9::ime::kInputScopeProperty, &textProperty.p);
-            Property("InputScope GetProperty", textResult, textProperty.p, range.p, cookie);
+            Property("InputScope GetProperty", textResult, textProperty.p, range.p, SUCCEEDED(spanResult) ? document.p : nullptr, cookie, false);
             Com<ITfReadOnlyProperty> appProperty;
             const HRESULT appResult = context_->GetAppProperty(numpad9::ime::kInputScopeProperty, &appProperty.p);
-            Property("InputScope GetAppProperty", appResult, appProperty.p, range.p, cookie);
+            Property("InputScope GetAppProperty", appResult, appProperty.p, range.p, SUCCEEDED(spanResult) ? document.p : nullptr, cookie, true);
             return S_OK;
         } catch (...) { return E_FAIL; }
     }
@@ -360,6 +396,69 @@ bool InputChecks(ITfThreadMgr* thread, ITfKeystrokeMgr* keys, TfClientId client,
         if (selected != wanted) return error("Select actual 你好 candidate");
         return true;
     };
+
+    auto readCurrentScope = [&](InputScope expected, bool requireScope) {
+        Com<ITfDocumentMgr> document; Com<ITfContext> context;
+        const HRESULT focused = thread->GetFocus(&document.p);
+        const HRESULT obtained = focused == S_OK && document.p ? document->GetTop(&context.p) : E_FAIL;
+        std::cerr << "Scope fixture focusHr=0x" << std::hex << focused << ", contextHr=0x" << obtained
+            << ", expectedEnum=" << std::dec << static_cast<int>(expected) << '\n';
+        if (obtained != S_OK || !context.p) return !requireScope;
+        Com<ITfContextView> view; HWND viewWindow = nullptr;
+        const HRESULT viewResult = context->GetActiveView(&view.p);
+        const HRESULT windowResult = viewResult == S_OK && view.p ? view->GetWnd(&viewWindow) : E_FAIL;
+        std::cerr << "Scope fixture active viewHr=0x" << std::hex << viewResult << ", windowHr=0x" << windowResult
+            << ", viewWindow=" << viewWindow << ", focusedWindow=" << GetFocus()
+            << ", sameWindow=" << (viewWindow == GetFocus()) << '\n';
+        Com<ScopeDiagnostic> scope; scope.p = new (std::nothrow) ScopeDiagnostic(context.p);
+        if (!scope.p) return false;
+        HRESULT readResult = E_FAIL;
+        const HRESULT request = context->RequestEditSession(client, scope.p, TF_ES_SYNC | TF_ES_READ, &readResult);
+        std::cerr << "Scope fixture read requestHr=0x" << std::hex << request << ", sessionHr=0x" << readResult
+            << ", ran=" << scope->ran << '\n';
+        if (request != S_OK || readResult != S_OK || !scope->ran) return !requireScope;
+        return !requireScope || std::find(scope->declaredScopes.begin(), scope->declaredScopes.end(), expected) != scope->declaredScopes.end();
+    };
+
+    // Collect absent-scope metadata before any IME key handling. EnumRanges
+    // checks the actual full-document span and NULL global target, in addition
+    // to the collapsed selection; no document text is read by this probe.
+    SetWindowTextW(edit, L""); SetFocus(edit); Pump(40);
+    readCurrentScope(IS_DEFAULT, false);
+    using SetScope = HRESULT (WINAPI*)(HWND, InputScope);
+    const HMODULE tsfModule = GetModuleHandleW(L"msctf.dll");
+    const auto setScope = tsfModule ? reinterpret_cast<SetScope>(GetProcAddress(tsfModule, "SetInputScope")) : nullptr;
+    if (!setScope) return error("Documented SetInputScope API unavailable");
+    for (const InputScope scope : {IS_PRIVATE, IS_NUMERIC_PIN, IS_PASSWORD}) {
+        const bool passwordStyle = scope == IS_PASSWORD;
+        HWND field = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER |
+            ES_AUTOHSCROLL | (passwordStyle ? ES_PASSWORD : 0), 10, 100, 350, 24, GetParent(edit), nullptr,
+            GetModuleHandleW(nullptr), nullptr);
+        if (!field) return error("Create real scoped EDIT fixture", HRESULT_FROM_WIN32(GetLastError()));
+        const HRESULT applied = setScope(field, scope);
+        SetFocus(field); Pump(150);
+        std::cerr << "Real EDIT scope fixture: SetInputScopeHr=0x" << std::hex << applied
+            << ", scopeEnum=" << std::dec << static_cast<int>(scope)
+            << ", focused=" << (GetFocus() == field) << ", passwordStyle=" << passwordStyle << '\n';
+        bool passed = applied == S_OK && GetFocus() == field;
+        // A real password style is independently protected by Windows and can
+        // legitimately have no TSF input context. Private/PIN tests require
+        // the scope to be genuinely observable through Windows' app property;
+        // SetInputScope success alone is not considered proof of a fixture.
+        if (passed) passed = readCurrentScope(scope, !passwordStyle);
+        if (passed) {
+            BOOL eaten = FALSE;
+            const HRESULT tested = keys->TestKeyDown(VK_NUMPAD6, static_cast<LPARAM>(0x004d0001), &eaten);
+            passed = (tested == S_OK || tested == S_FALSE) && !eaten;
+            if (!passed) error("Real protected scope must not consume numpad input", tested);
+            Com<ITfCandidateListUIElement> protectedUi; protectedUi.p = candidate();
+            if (protectedUi.p) { passed = false; error("Candidate UI appeared in real protected scope"); }
+        }
+        const HRESULT cleared = setScope(field, IS_DEFAULT); // Documented cleanup before HWND destruction.
+        SetFocus(edit); DestroyWindow(field); Pump(100);
+        if (cleared != S_OK) return error("Clear real input scope association", cleared);
+        if (!passed) return error("Real protected scope fixture failed or was not observable");
+    }
 
     SetWindowTextW(edit, L""); SetFocus(edit); Pump(40);
     if (!compositionEquals(nullptr, "Initially no composition") ||

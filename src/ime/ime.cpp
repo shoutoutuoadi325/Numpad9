@@ -49,6 +49,33 @@ bool ReadCompartment(IUnknown* owner, REFGUID guid, LONG& value) {
     if (present) value = variant.lVal;
     VariantClear(&variant); return present;
 }
+bool UndeclaredScopeAllowed(ITfContext* context, ITfReadOnlyProperty* property, TfEditCookie cookie) {
+    // NULL scans all declared property ranges, rather than an empty selection.
+    // EnumRanges failures (including unsupported attribute transitions) do not
+    // prove absence. A declared or unreadable scope always stays fail-closed.
+    ComPtr<IEnumTfRanges> ranges;
+    if (property->EnumRanges(cookie, ranges.put(), nullptr) != S_OK || !ranges) return false;
+    ComPtr<ITfRange> declared;
+    ULONG fetched = 0;
+    if (ranges->Next(1, declared.put(), &fetched) != S_FALSE || fetched || declared) return false;
+    // Known classic controls can have no input-scope attribute at all. Never
+    // interpret a custom renderer's failed property read as a public field.
+    // Inspect only window metadata, without reading control/document text.
+    ComPtr<ITfContextView> view;
+    HWND window = nullptr;
+    if (context->GetActiveView(view.put()) != S_OK || !view ||
+        view->GetWnd(&window) != S_OK || !window || !IsWindow(window) || GetFocus() != window) return false;
+    wchar_t name[128]{};
+    if (!GetClassNameW(window, name, static_cast<int>(std::size(name)))) return false;
+    bool classic = false;
+    for (const wchar_t* known : {L"EDIT", L"RICHEDIT50W", L"RichEdit20W", L"RichEdit20A"})
+        if (CompareStringOrdinal(name, -1, known, -1, TRUE) == CSTR_EQUAL) classic = true;
+    if (!classic) return false;
+    SetLastError(ERROR_SUCCESS);
+    const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+    if (!style && GetLastError() != ERROR_SUCCESS) return false;
+    return (style & (ES_PASSWORD | ES_READONLY)) == 0;
+}
 // Query only the current selection's input scope, never document contents.
 bool ScopeAllowed(ITfContext* context, TfEditCookie cookie) {
     TF_SELECTION selection{}; ULONG fetched = 0;
@@ -61,7 +88,11 @@ bool ScopeAllowed(ITfContext* context, TfEditCookie cookie) {
     if (context->GetAppProperty(kInputScopeProperty, property.put()) != S_OK || !property) return false;
     VARIANT variant; VariantInit(&variant);
     const HRESULT hr = property->GetValue(cookie, range.get(), &variant);
-    bool allowed = SUCCEEDED(hr) && variant.vt == VT_EMPTY;
+    bool allowed = hr == S_OK && variant.vt == VT_EMPTY;
+    // GetValue S_FALSE can also mean mixed coverage, not an unspecified scope.
+    // The known legacy E_FAIL/VT_EMPTY case needs independent absence evidence.
+    if ((hr == E_FAIL || hr == S_FALSE) && variant.vt == VT_EMPTY)
+        allowed = UndeclaredScopeAllowed(context, property.get(), cookie);
     if (SUCCEEDED(hr) && variant.vt == VT_UNKNOWN && variant.punkVal) {
         ComPtr<ITfInputScope> scope;
         allowed = SUCCEEDED(variant.punkVal->QueryInterface(kIidInputScope, reinterpret_cast<void**>(scope.put())));
@@ -335,7 +366,7 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     bool CompartmentsAllowed(ITfContext* context) const {
         if (!context || !thread_ || secure_ || !foreground_) return false;
         TF_STATUS status{};
-        if (FAILED(context->GetStatus(&status)) || (status.dwStaticFlags & TS_SD_READONLY)) return false;
+        if (FAILED(context->GetStatus(&status)) || (status.dwDynamicFlags & TS_SD_READONLY)) return false;
         LONG value = 0;
         for (IUnknown* owner : {static_cast<IUnknown*>(context), static_cast<IUnknown*>(thread_.get())}) {
             if (ReadCompartment(owner, GUID_COMPARTMENT_KEYBOARD_DISABLED, value) && value) return false;
