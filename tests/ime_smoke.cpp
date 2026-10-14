@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <msctf.h>
 #include <richedit.h>
+#include <inputscope.h>
 #include <shellapi.h>
 #include <iostream>
 #include <cwchar>
@@ -164,6 +165,71 @@ public:
     }
 };
 
+// Failure-only diagnostics use an independent application read session. Log
+// scope metadata and HRESULTs; never read or log the editor's text.
+class ScopeDiagnostic final : public ITfEditSession {
+    std::atomic<ULONG> references_{1};
+    ITfContext* context_;
+    void Property(const char* name, HRESULT obtained, ITfReadOnlyProperty* property,
+                  ITfRange* selection, TfEditCookie cookie) {
+        std::cerr << name << ": propertyHr=0x" << std::hex << obtained
+            << ", propertyPresent=" << (property != nullptr);
+        if (!property || !selection) { std::cerr << '\n'; return; }
+        VARIANT value; VariantInit(&value);
+        const HRESULT result = property->GetValue(cookie, selection, &value);
+        std::cerr << ", valueHr=0x" << result << ", vt=" << value.vt;
+        if (value.vt == VT_UNKNOWN && value.punkVal) {
+            Com<ITfInputScope> scope;
+            const HRESULT query = value.punkVal->QueryInterface(numpad9::ime::kIidInputScope, scope.out());
+            std::cerr << ", inputScopeQI=0x" << query;
+            if (SUCCEEDED(query) && scope.p) {
+                InputScope* scopes = nullptr; UINT count = 0;
+                const HRESULT fetched = scope->GetInputScopes(&scopes, &count);
+                std::cerr << ", scopesHr=0x" << fetched << ", scopeCount=" << std::dec << count;
+                if (SUCCEEDED(fetched) && scopes && count <= 1024) {
+                    std::cerr << ", scopeEnums=";
+                    for (UINT i = 0; i < count && i < 32; ++i) std::cerr << static_cast<int>(scopes[i]) << ',';
+                }
+                CoTaskMemFree(scopes);
+            }
+        }
+        std::cerr << '\n'; VariantClear(&value);
+    }
+public:
+    bool ran = false;
+    explicit ScopeDiagnostic(ITfContext* context) : context_(context) { context_->AddRef(); }
+    ~ScopeDiagnostic() { context_->Release(); }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        *out = nullptr;
+        if (!IsEqualIID(iid, IID_IUnknown) && !IsEqualIID(iid, IID_ITfEditSession)) return E_NOINTERFACE;
+        *out = static_cast<ITfEditSession*>(this); AddRef(); return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
+    ULONG STDMETHODCALLTYPE Release() override { const ULONG left = --references_; if (!left) delete this; return left; }
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
+        ran = true;
+        try {
+            TF_STATUS status{};
+            const HRESULT statusResult = context_->GetStatus(&status);
+            TF_SELECTION selected{}; ULONG count = 0;
+            const HRESULT selectionResult = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selected, &count);
+            Com<ITfRange> range; range.p = selected.range;
+            std::cerr << "Independent scope read session: statusHr=0x" << std::hex << statusResult
+                << ", dynamicFlags=0x" << status.dwDynamicFlags << ", staticFlags=0x" << status.dwStaticFlags
+                << ", selectionHr=0x" << selectionResult << ", selections=" << std::dec << count
+                << ", rangePresent=" << (range.p != nullptr) << '\n';
+            Com<ITfProperty> textProperty;
+            const HRESULT textResult = context_->GetProperty(numpad9::ime::kInputScopeProperty, &textProperty.p);
+            Property("InputScope GetProperty", textResult, textProperty.p, range.p, cookie);
+            Com<ITfReadOnlyProperty> appProperty;
+            const HRESULT appResult = context_->GetAppProperty(numpad9::ime::kInputScopeProperty, &appProperty.p);
+            Property("InputScope GetAppProperty", appResult, appProperty.p, range.p, cookie);
+            return S_OK;
+        } catch (...) { return E_FAIL; }
+    }
+};
+
 bool InputChecks(ITfThreadMgr* thread, ITfKeystrokeMgr* keys, TfClientId client, HWND edit) {
     auto error = [](const char* operation, HRESULT hr = E_FAIL) {
         std::cerr << operation << ": 0x" << std::hex << hr << '\n'; return false;
@@ -213,6 +279,21 @@ bool InputChecks(ITfThreadMgr* thread, ITfKeystrokeMgr* keys, TfClientId client,
                     << std::hex << hr << ", vt=" << value.vt;
                 if (value.vt == VT_I4) std::cerr << ", value=" << value.lVal;
                 std::cerr << '\n'; VariantClear(&value);
+            }
+        }
+        std::cerr << "Keyboard modifiers: ctrl=" << ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+            << ", shift=" << ((GetKeyState(VK_SHIFT) & 0x8000) != 0)
+            << ", alt=" << ((GetKeyState(VK_MENU) & 0x8000) != 0)
+            << ", leftWin=" << ((GetKeyState(VK_LWIN) & 0x8000) != 0)
+            << ", rightWin=" << ((GetKeyState(VK_RWIN) & 0x8000) != 0)
+            << ", numLock=" << ((GetKeyState(VK_NUMLOCK) & 1) != 0) << '\n';
+        if (context.p) {
+            Com<ScopeDiagnostic> scope; scope.p = new (std::nothrow) ScopeDiagnostic(context.p);
+            if (scope.p) {
+                HRESULT readResult = E_FAIL;
+                const HRESULT request = context->RequestEditSession(client, scope.p, TF_ES_SYNC | TF_ES_READ, &readResult);
+                std::cerr << "Independent scope lock: requestHr=0x" << std::hex << request
+                    << ", sessionHr=0x" << readResult << ", ran=" << scope->ran << '\n';
             }
         }
     };

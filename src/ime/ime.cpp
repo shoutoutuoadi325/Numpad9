@@ -54,11 +54,14 @@ bool ScopeAllowed(ITfContext* context, TfEditCookie cookie) {
     TF_SELECTION selection{}; ULONG fetched = 0;
     if (FAILED(context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched)) || fetched != 1 || !selection.range) return false;
     ComPtr<ITfRange> range; range.reset(selection.range);
-    ComPtr<ITfProperty> property;
-    if (FAILED(context->GetProperty(kInputScopeProperty, property.put()))) return false;
+    // Input scope belongs to the host application, rather than a writable
+    // text-service property. ITfInputScope's documented retrieval path uses
+    // GetAppProperty and ITfReadOnlyProperty under the current TSF read lock.
+    ComPtr<ITfReadOnlyProperty> property;
+    if (context->GetAppProperty(kInputScopeProperty, property.put()) != S_OK || !property) return false;
     VARIANT variant; VariantInit(&variant);
     const HRESULT hr = property->GetValue(cookie, range.get(), &variant);
-    bool allowed = SUCCEEDED(hr);
+    bool allowed = SUCCEEDED(hr) && variant.vt == VT_EMPTY;
     if (SUCCEEDED(hr) && variant.vt == VT_UNKNOWN && variant.punkVal) {
         ComPtr<ITfInputScope> scope;
         allowed = SUCCEEDED(variant.punkVal->QueryInterface(kIidInputScope, reinterpret_cast<void**>(scope.put())));
