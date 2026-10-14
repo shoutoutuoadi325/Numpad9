@@ -269,6 +269,17 @@ class Service final : public RefCount, public ITfTextInputProcessorEx, public IT
     HWND lastOwner_ = nullptr;
     bool hasCaret_ = false;
 
+    HRESULT OpenForExplicitSelection() {
+        if (!thread_ || client_ == TF_CLIENTID_NULL) return E_UNEXPECTED;
+        ComPtr<ITfCompartmentMgr> manager;
+        ComPtr<ITfCompartment> compartment;
+        HRESULT hr = thread_->QueryInterface(IID_ITfCompartmentMgr, reinterpret_cast<void**>(manager.put()));
+        if (SUCCEEDED(hr)) hr = manager->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, compartment.put());
+        if (FAILED(hr)) return hr;
+        VARIANT value; VariantInit(&value); value.vt = VT_I4; value.lVal = TRUE;
+        return compartment->SetValue(client_, &value);
+    }
+
     void UnwatchCompartments(std::vector<CompartmentSubscription>& subscriptions) {
         // Move the list first so a reentrant notification cannot unadvise a
         // subscription twice. Sources keep their compartments alive until done.
@@ -556,6 +567,10 @@ public:
         if (FAILED(hr)) { Deactivate(); return hr; }
         if (!uiOnly_ && SUCCEEDED(thread_->QueryInterface(IID_ITfLangBarItemMgr, reinterpret_cast<void**>(languageBar_.put())))) {
             modeButton_.reset(new (std::nothrow) ModeButton([this]() -> HRESULT {
+                // Clicking our mode button is an explicit request to use this
+                // conversion mode. Ordinary keyboard events never open the IME.
+                const HRESULT open = OpenForExplicitSelection();
+                if (FAILED(open)) return open;
                 if (composition_) return CandidateCommand({Action::Toggle});
                 engine_.SetMode(engine_.GetMode() == Mode::Pinyin ? Mode::English : Mode::Pinyin);
                 if (modeButton_) modeButton_->SetMode(engine_.GetMode());
@@ -569,6 +584,12 @@ public:
         ComPtr<ITfCategoryMgr> categories;
         if (SUCCEEDED(CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_ITfCategoryMgr, reinterpret_cast<void**>(categories.put()))))
             categories->RegisterGUID(kDisplayAttribute, &attributeAtom_);
+        // Windows may retain a closed state from the previous input profile.
+        // Initialize this newly activated IME as open, as Microsoft's SampleIME
+        // InitializeSampleIMECompartment does; later user close events remain
+        // authoritative and preserve normal key pass-through.
+        hr = OpenForExplicitSelection();
+        if (FAILED(hr)) { Deactivate(); return hr; }
         return S_OK;
     }
     STDMETHODIMP Deactivate() override {
@@ -601,6 +622,9 @@ public:
             if (languageBar_) languageBar_->RemoveItem(modeButton_.get());
         }
         modeButton_.reset(); languageBar_.reset();
+        // OPENCLOSE is a shared Windows input-mode compartment. SampleIME's
+        // _ClearCompartment explicitly leaves it intact; do not clear it or
+        // restore an older profile's value over the user's latest selection.
         keys_.reset(); threadSource_.reset(); uiManager_.reset(); thread_.reset(); consumed_.fill(false);
         client_ = TF_CLIENTID_NULL; foreground_ = false;
         // An already scheduled cleanup session holds this service/context alive. Its
