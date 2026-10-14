@@ -43,7 +43,11 @@ $installerItem = Get-Item -LiteralPath $installer
 if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'NotSigned') { throw 'The GitHub unsigned route requires an actually unsigned installer.' }
 $versionInfo = $installerItem.VersionInfo
 $binaryProductVersion = '{0}.{1}.{2}.{3}' -f $versionInfo.ProductMajorPart, $versionInfo.ProductMinorPart, $versionInfo.ProductBuildPart, $versionInfo.ProductPrivatePart
-if ($versionInfo.CompanyName -cne 'Zhiqi Zhang' -or $versionInfo.ProductVersion -cne $version -or $binaryProductVersion -cne "$version.0") {
+# Inno edits fixed-width version strings in place, preserving trailing spaces.
+# Normalize ASCII right-padding only; leading text and other whitespace remain.
+$companyName = $versionInfo.CompanyName.TrimEnd([char]' ')
+$textProductVersion = $versionInfo.ProductVersion.TrimEnd([char]' ')
+if ($companyName -cne 'Zhiqi Zhang' -or $textProductVersion -cne $version -or $binaryProductVersion -cne "$version.0") {
     throw "Public installer metadata differs from the release plan. CompanyName='$($versionInfo.CompanyName)'; ProductVersion='$($versionInfo.ProductVersion)'; binary ProductVersion='$binaryProductVersion'. Expected CompanyName='Zhiqi Zhang'; textual ProductVersion='$version'; binary ProductVersion='$version.0'."
 }
 $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
