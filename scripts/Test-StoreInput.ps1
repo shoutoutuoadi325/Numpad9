@@ -55,6 +55,9 @@ public static class Numpad9StoreInputProbe {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr window);
     [DllImport("user32.dll")] static extern IntPtr GetFocus();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from,uint to,bool attach);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassNameW(IntPtr window,StringBuilder name,int length);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
     [DllImport("user32.dll")] static extern bool PostMessageW(IntPtr window,uint message,IntPtr wparam,IntPtr lparam);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowTextW(IntPtr window,StringBuilder text,int length);
@@ -64,12 +67,21 @@ public static class Numpad9StoreInputProbe {
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr LoadLibraryW(string name);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandleW(string name);
     [DllImport("kernel32.dll")] static extern uint WTSGetActiveConsoleSessionId();
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("ole32.dll")] static extern int CoInitializeEx(IntPtr reserved,uint mode);
     [DllImport("ole32.dll")] static extern void CoUninitialize();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
     public static string Read(IntPtr window) { var text=new StringBuilder(1024); GetWindowTextW(window,text,text.Capacity); return text.ToString(); }
     static IntPtr Procedure(IntPtr w,uint m,IntPtr p,IntPtr l) {
-        if(m==0x8001) { SetForegroundWindow(w); SetFocus(Edit); return IntPtr.Zero; }
+        if(m==0x8001) {
+            uint process;
+            uint foregroundThread=GetWindowThreadProcessId(GetForegroundWindow(),out process);
+            uint ownThread=GetCurrentThreadId();
+            bool attached=foregroundThread!=0 && foregroundThread!=ownThread && AttachThreadInput(ownThread,foregroundThread,true);
+            try { BringWindowToTop(w); SetForegroundWindow(w); SetFocus(Edit); }
+            finally { if(attached) AttachThreadInput(ownThread,foregroundThread,false); }
+            return IntPtr.Zero;
+        }
         if(m==0x10) { DestroyWindow(w); return IntPtr.Zero; }
         if(m==2) { PostQuitMessage(0); return IntPtr.Zero; }
         return DefWindowProcW(w,m,p,l);
@@ -105,9 +117,11 @@ public static class Numpad9StoreInputProbe {
             if(GetForegroundWindow()==Window) return;
             Thread.Sleep(50);
         } while(DateTime.UtcNow<deadline);
+        var foregroundClass=new StringBuilder(128);
+        GetClassNameW(GetForegroundWindow(),foregroundClass,foregroundClass.Capacity);
         throw new Exception("The test text window is not foreground; no keys sent. Runner session="+
             System.Diagnostics.Process.GetCurrentProcess().SessionId+", console session="+
-            WTSGetActiveConsoleSessionId()+", foreground present="+(GetForegroundWindow()!=IntPtr.Zero));
+            WTSGetActiveConsoleSessionId()+", foreground class="+foregroundClass);
     }
     public static void Key(ushort scan) {
         if(GetForegroundWindow()!=Window) throw new Exception("Focus changed; no keys sent to another application.");
