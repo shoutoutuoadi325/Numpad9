@@ -30,6 +30,125 @@ $screenshot = $null
 $failure = $null
 $languageSnapshot = [IO.Path]::GetTempFileName()
 $languageRestored = $false
+$inputServiceStates = @()
+$ownedCtfmon = $null
+$inputSessionRestored = $false
+
+function Initialize-DisposableInputSession {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class Numpad9CiInputSession {
+    [DllImport("kernel32.dll")] public static extern uint GetActiveConsoleSessionId();
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] private static extern IntPtr GetThreadDesktop(uint thread);
+    [DllImport("user32.dll")] private static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetUserObjectInformationW(IntPtr handle, int index,
+        StringBuilder text, uint bytes, out uint needed);
+    private static string PublicName(IntPtr handle) {
+        var text = new StringBuilder(256);
+        uint needed;
+        if (handle == IntPtr.Zero || !GetUserObjectInformationW(handle, 2, text, 512, out needed))
+            return "unavailable";
+        var name = text.ToString();
+        return name == "WinSta0" || name == "Default" || name == "Winlogon" || name == "Disconnect"
+            ? name : "non-default";
+    }
+    public static string Desktop() { return PublicName(GetThreadDesktop(GetCurrentThreadId())); }
+    public static string Station() { return PublicName(GetProcessWindowStation()); }
+}
+'@
+    $session = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    Write-Host ("Input fixture session={0}; activeConsoleSession={1}; station={2}; desktop={3}" -f
+        $session, [Numpad9CiInputSession]::GetActiveConsoleSessionId(),
+        [Numpad9CiInputSession]::Station(), [Numpad9CiInputSession]::Desktop())
+    $existing = @(Get-Process -Name ctfmon -ErrorAction SilentlyContinue)
+    foreach ($process in $existing) { Write-Host "Existing ctfmon PID=$($process.Id); session=$($process.SessionId)" }
+
+    # This is diagnostic CI setup, not a product installer action. Microsoft
+    # documents that a disabled input service can prevent ctfmon/framework startup:
+    # https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/troubleshoot-ime-common-issues
+    foreach ($name in @('TextInputManagementService', 'TabletInputService')) {
+        $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (-not $service) { Write-Host "Input service $name is absent."; continue }
+        $configuration = Get-CimInstance -ClassName Win32_Service -Filter "Name='$name'"
+        if (-not $configuration) { throw "Cannot obtain original input service configuration: $name" }
+        Write-Host "Input service $name; state=$($service.Status); startMode=$($configuration.StartMode)"
+        if ($env:GITHUB_ACTIONS -ne 'true') { continue }
+        $record = [pscustomobject]@{
+            name = $name; startMode = [string]$configuration.StartMode;
+            status = [string]$service.Status; startModeChanged = $false; startRequested = $false
+        }
+        $script:inputServiceStates += $record
+        if ($service.Status -ne 'Stopped') { continue }
+        if ($record.startMode -eq 'Disabled') {
+            $record.startModeChanged = $true
+            Set-Service -Name $name -StartupType Manual
+        }
+        $record.startRequested = $true
+        Start-Service -Name $name
+        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(10))
+        Write-Host "Started disposable input service $name."
+    }
+    if ($env:GITHUB_ACTIONS -ne 'true') { Write-Host 'Input-session mutation skipped outside GitHub Actions.'; return }
+    $sameSession = @(Get-Process -Name ctfmon -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session })
+    if (-not $sameSession.Count) {
+        $official = Join-Path $env:SystemRoot 'System32/ctfmon.exe'
+        if (-not (Test-Path -LiteralPath $official -PathType Leaf)) { throw 'Official Windows ctfmon.exe is unavailable.' }
+        $script:ownedCtfmon = Start-Process -FilePath $official -PassThru
+        Write-Host "Launched own ctfmon PID=$($script:ownedCtfmon.Id) for session=$session."
+    }
+    Start-Sleep -Milliseconds 500
+    $ready = @(Get-Process -Name ctfmon -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $session })
+    if (-not $ready.Count) { throw 'No ctfmon process is running in the disposable test session.' }
+    foreach ($process in $ready) { Write-Host "Ready ctfmon PID=$($process.Id); session=$($process.SessionId)" }
+}
+
+function Restore-DisposableInputSession {
+    $errors = @()
+    if ($script:ownedCtfmon) {
+        try {
+            $script:ownedCtfmon.Refresh()
+            if (-not $script:ownedCtfmon.HasExited) {
+                # Keep the original process object/handle; never kill by name,
+                # select another session, or terminate an existing user process.
+                $script:ownedCtfmon.Kill()
+                if (-not $script:ownedCtfmon.WaitForExit(5000)) { throw 'Own ctfmon did not exit.' }
+            }
+        } catch { $errors += "Own ctfmon cleanup failed: $($_.Exception.Message)" }
+    }
+    foreach ($record in $script:inputServiceStates) {
+        try {
+            if ($record.startRequested) {
+                $service = Get-Service -Name $record.name
+                if ($service.Status -ne 'Stopped') {
+                    Stop-Service -Name $record.name
+                    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(10))
+                }
+            }
+        } catch { $errors += "Input service state restoration failed ($($record.name)): $($_.Exception.Message)" }
+        try {
+            if ($record.startModeChanged) {
+                $mode = switch ($record.startMode) {
+                    'Disabled' { 'Disabled' }
+                    'Manual' { 'Manual' }
+                    'Auto' { 'Automatic' }
+                    default { throw 'Unsupported original service startup mode.' }
+                }
+                Set-Service -Name $record.name -StartupType $mode
+            }
+            $actual = Get-CimInstance -ClassName Win32_Service -Filter "Name='$($record.name)'"
+            $service = Get-Service -Name $record.name
+            if ($actual.StartMode -ne $record.startMode -or [string]$service.Status -ne $record.status) {
+                throw 'Original startup mode and service state were not restored.'
+            }
+        } catch { $errors += "Input service configuration restoration failed ($($record.name)): $($_.Exception.Message)" }
+    }
+    if ($errors.Count) { throw ($errors -join '; ') }
+    $script:inputSessionRestored = $true
+}
 
 function Invoke-DisposableLanguageSetup([string]$Mode) {
     # Run the International module in Windows PowerShell so its native language
@@ -196,6 +315,7 @@ try {
         Write-Host "Captured the actual native window at $($capture.width) x $($capture.height) physical pixels."
     }
     Invoke-DisposableLanguageSetup 'Enroll'
+    Initialize-DisposableInputSession
     foreach ($pair in @(@('x64', $dir64), @('x86', $dir32))) {
         $arch = $pair[0]
         $smoke = Join-Path $root "build/windows-$arch/$Configuration/ime_smoke.exe"
@@ -237,7 +357,14 @@ try {
         $cleanupFailure = if ($cleanupFailure) { "$cleanupFailure; $message" } else { $message }
         Write-Warning "Disposable language restore failed: $message"
     } finally { Remove-Item -LiteralPath $languageSnapshot -Force }
-    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration and TSF profile activation, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; originalUserLanguagePreferencesRestored = $languageRestored; cleanupFailure = $cleanupFailure } |
+    try { Restore-DisposableInputSession }
+    catch {
+        $passed = $false
+        $message = $_.Exception.Message
+        $cleanupFailure = if ($cleanupFailure) { "$cleanupFailure; $message" } else { $message }
+        Write-Warning "Disposable input-session restore failed: $message"
+    }
+    [ordered]@{ version = $Version; installerSha256 = (Get-FileHash $Installer -Algorithm SHA256).Hash; os = [Environment]::OSVersion.VersionString; type = 'automated-cloud-installer-smoke'; passed = $passed; screenshot = $screenshot; scope = 'silent install, x64/x86 machine registration and TSF profile activation, native host window, uninstall'; physicalDeviceCompatibilityTest = $false; originalUserLanguagePreferencesRestored = $languageRestored; originalInputSessionRestored = $inputSessionRestored; cleanupFailure = $cleanupFailure } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $artifacts 'result.json') -Encoding UTF8
     if ($cleanupFailure -and -not $failure) { throw $cleanupFailure }
 }
