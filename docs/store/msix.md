@@ -1,59 +1,43 @@
-# Microsoft Store MSIX 路线
+# Microsoft Store MSIX 分发
 
-本项目的 Store 分发使用 **MSIX**；GitHub EXE 保留传统 TSF 安装方式。两种载荷和最低系统要求不同，不能用 EXE 的介绍或截图代替 Store 版本实际行为。
+商店版使用独立的 `Numpad9Store.exe`，目标为 Windows 11 24H2（build 26100）及以上的 x64 电脑。应用使用 Windows 文本输入 API；安装、更新和卸载由 Windows 与 Microsoft Store 管理。Microsoft Store 为分发的 MSIX 签名，此路线无需购买商业代码签名证书。
 
-MSIX 使用独立 `Numpad9Store.exe`，目标为 **Windows 11 24H2（build 26100）及以上 x64**。它使用 Windows 文本输入 API，不包含传统 TSF DLL、`registry.dat`、COM 注册程序或安装脚本。Windows 管理 MSIX 安装、更新和卸载。Store 会为最终分发的 MSIX 签名，**此路线无需购买商业代码签名证书**。未签名上传候选不能当作普通网站下载的受信 MSIX 发行包。
+## 包身份与授权
 
-## Microsoft 提供的身份与授权
+正式身份来自 Partner Center，记录于 `packaging/msix/store-identity.json`：
 
-以下三项必须与 **MSIX 产品** Partner Center 产品标识完全一致：包标识名称 `IdentityName`、发行人证书主题 `PublisherDN`、发行人显示名称 `PublisherDisplayName`。已建立的 EXE 产品标识不能自动当作 MSIX 标识；不要根据应用名称或法律姓名猜测这些值。
+- 包标识：`14E33A41.Numpad9`
+- 发行人证书主题：`CN=BD412261-9548-4F5A-95C1-24B072A9C1CC`
+- 发行人显示名称：`Zhiqi Zhang`
+- 包家族名称：`14E33A41.Numpad9_1c2s66sz70f52`
 
-包声明 `runFullTrust` 和自定义能力 `Microsoft.appCategory.textInputMethod_8wekyb3d8bbwe`，后者需要 Store 能力审批。已收到与真实包身份匹配的 LAF `featureId`、`token` 和 `attestation`；实际值只保存在本地私有配置中。这三项授权信息与 Windows 的 `inputProfile` 绑定参数分别处理，没有官方依据表明微软必须另行发放第四个专属标识。绑定参数仍需与实际系统输入配置匹配并验证运行行为。应用现在自动读取当前配置；这条绑定路线仍需确认新 API 接受该标识并向目标应用交付按键和编辑会话。LAF 令牌不替代 Store 能力审批，也不是商业签名证书。
+包声明 `runFullTrust` 和 `Microsoft.appCategory.textInputMethod_8wekyb3d8bbwe`。TextInputMethod 自定义能力在 Store 提交时申请批准。Microsoft 发放的 LAF 授权包含 `featureId`、`token` 和 `attestation`，运行配置保存于私有的 `private/input-access.json`，不提交到公开源码仓库。
 
-空模板位于 `packaging/msix/input-access.example.json`。在本地 `private/input-access.json` 填入真实值，实际授权文件不提交仓库。`.gitignore` 忽略 `private/` 和所有实际 `input-access.json`；源码归档也排除该运行配置。正式包会将配置交付运行时，所以不要在这里放账户密码、私钥或其他无关秘密。
+模板为 `packaging/msix/input-access.example.json`。`inputProfile` 是可选的 Windows 输入配置绑定值；留空时，应用读取启用时的当前 Windows 键盘配置。用户在 Numpad9 窗口中启用或停用输入，无需修改默认输入法。
 
-脚本检查微软发放的三个字段均为非空、无占位符的字符串，复制为包根目录 `input-access.json`，报告只记录哈希。`inputProfile` 是可选字符串；为空时从 `ITfInputProcessorProfileMgr::GetActiveProfile` 读取启用时的真实系统输入配置，按已公开的 `LANGID:KLID` 或 `LANGID:{CLSID}{ProfileGUID}` 格式绑定，不创建假配置、不修改用户默认输入法。**离线结构检查不能证明授权有效或绑定关系正确。** 实际运行时许可和 Store 能力认证仍需确认。Windows 既有输入配置字符串有 `LANGID:KLID` 或 `LANGID:{CLSID}{ProfileGUID}` 格式，但新 API 的 `inputProfile` 参数说明尚未明确这些格式的语义。自动读取 Windows 真实标识也不能代替对新 API 参数语义的确认。创建处理器、激活、目标应用的按键和编辑会话交付、停止及卸载生命周期仍需验证。商店版当前采用运行中的应用绑定既有 Windows 输入配置的路线；没有证据证明它会自行注册新的 Win+Space 项。UI 不再声称系统菜单中会出现新的 Numpad9 输入法。[Windows 输入配置格式](https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/default-input-locales-for-windows-language-packs?view=windows-11)、[新 API 参数](https://learn.microsoft.com/en-us/uwp/api/windows.ui.input.preview.text.textinputservice.createkeyboardinputprocessor?view=winrt-26100)。
+## 打包
 
-## 构建
-
-需要 Visual Studio 2022 C++、CMake、Windows SDK **10.0.26100.0** 和 PowerShell 7。脚本显式选择该 SDK 编译 Store host。
-
-```powershell
-./scripts/Build-Msix.ps1 -DevelopmentIdentity
-```
-
-此命令使用仅供 CI 的开发身份，不能提交 Store。缺少真实授权配置时，应用保持输入功能禁用并显示状态。打包成功不代表输入授权成功，也不是 Windows 11 实际输入场景的验证结果。
-
-正式上传候选：
+Windows 打包工具需要 Visual Studio 2022 或 2026 的 C++ 工具、CMake、Windows SDK 10.0.26100.0 和 PowerShell 7。
 
 ```powershell
-./scripts/Build-Msix.ps1 -IdentityName '<Partner Center 包标识名称>' `
-    -PublisherDN '<Partner Center 发行人证书主题>' `
-    -PublisherDisplayName '<Partner Center 发行人显示名称>' `
+./scripts/Build-Msix.ps1 -IdentityName '14E33A41.Numpad9' `
+    -PublisherDN 'CN=BD412261-9548-4F5A-95C1-24B072A9C1CC' `
+    -PublisherDisplayName 'Zhiqi Zhang' `
     -RuntimeConfigurationPath ./private/input-access.json `
-    -PolicyTextPath '<与实际 Store 版本相符的 UTF-8 政策文件>'
+    -PolicyTextPath ./docs/store/privacy-policy-msix.md
 ```
 
-`-PolicyTextPath` 可选，可将已经提交 Store 的实际政策文本随包提供。不要打包旧 TSF 政策模板或未填写占位符的草稿。Store 属性中的政策仍需与新版本处理输入的方式相符。
+已构建的 Store host 可通过 `-SkipBuild -HostPath '<Numpad9Store.exe 路径>'` 指定。包版本为 `0.1.0.0`，host 产品版本为 `0.1.0`；后续更新应同步提升版本。
 
-已构建的 host 可通过 `-SkipBuild -HostPath '<Numpad9Store.exe 绝对路径>'` 指定。正式包同样校验真实身份、授权配置、PE 位数和版本。默认包版本 `0.1.0.0` 与 host 版本 `0.1.0` 匹配，后续版本须一起提升。
+输出为 `artifacts/Numpad9-0.1.0.0-x64-STORE-UPLOAD.msix`。包包含 Store host、词典、GPL、词典许可与署名、应用图标、隐私政策和运行配置。正式 MSIX 交给 Partner Center，授权配置及包含授权配置的包不上传到公开 GitHub Release。
 
-输出 `artifacts/Numpad9-0.1.0.0-x64-STORE-UPLOAD.msix`，保留对应 JSON 报告和 SDK 日志。这个上传候选不自行签名，Microsoft Store 在提交处理期间签名。可以向 Partner Center 上传 `.msix`；Visual Studio 生成的 `.msixupload` 是官方推荐的另一种上传格式。
+macOS 可使用 Microsoft 的 [MSIX Packaging SDK](https://github.com/microsoft/msix-packaging) 的 `makemsix pack -d <包目录> -p <输出.msix>` 打包同一载荷。正式包使用上述 Partner Center 身份，由 Microsoft Store 签名分发。
 
-## 检查与分发
+完整对应源码应包含两种输入实现、构建工具及词典来源，并保留第三方许可。GitHub EXE 与商店 MSIX 的使用方法和最低系统要求分别说明。
 
-`Build-Msix.ps1` 以明确白名单创建全新包目录，只复制 Store host、词典、GPL、词典许可/署名、原应用图标的标准尺寸导出文件以及可选的实际政策和运行配置。`MakeAppx pack` 保留完整语义检查，不使用 `/nv`。打包后还检查没有 TSF DLL、注册程序、私有 registry hive 或本地签名，并且只有一个 Store host EXE。
+## Microsoft 文档
 
-GitHub CI 以独立 job 构建两条路线：EXE job 编译、测试、实际注册激活、截图和卸载；MSIX job 独立编译开发身份包并执行 SDK 语义检查。两者使用同一个提交，分别上传包、检查输出和对应源码归档，因此 EXE 截图失败不会阻塞 MSIX 编译诊断。Store 真实身份、授权和审批不会由开发配置冒充。分发版本的完整对应源码归档应包括两种实现和构建工具，保留词典许可。
-
-MSIX job 还运行 `Test-StoreHost.ps1`：以未打包方式启动同一个新 Store host，仅检查 WinRT 初始化和默认引导窗口，真实捕获 `store-host-zh.png`、`store-host-en.png` 两张 1366×900 窗口图，并正常关闭自己启动的进程。它只发送语言按钮命令，不启用输入、不调用授权流程、不安装包。JSON 报告明确标识 `inputActivated=false` 和 `microsoftInputGrantValidated=false`。这些是实际 UI 图；不能把它们当作已授权的系统输入或安装成功证据。
-
-Store listing 应说明 Windows 11 24H2+、x64、数字小键盘、真实启用方式和本地处理输入，不写开发过程。Store 截图来自实际运行的 Store host，不能用 EXE 的 TSF 注册界面冒充 MSIX 功能。GitHub 文档可另行链接支持 Windows 10 1809+ 的传统 EXE。
-
-## 官方依据
-
-- [MSIX 签名指南](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide)：Store 分发不要求开发者自己签名。
-- [分发路线](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path)：Store MSIX 免费签名与更新；EXE/MSI 是独立路线。
-- [能力声明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/app-capability-declarations)：TextInputMethod 自定义能力和 Store 审批。
-- [MakeAppx](https://learn.microsoft.com/en-us/windows/msix/package/create-app-package-with-makeappx-tool)：SDK 语义验证。
-- [上传包格式](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps)：支持直接上传应用包，推荐 `.msixupload`。
+- [MSIX 签名指南](https://learn.microsoft.com/en-us/windows/msix/package/sign-msix-package-guide)
+- [分发路线](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/choose-distribution-path)
+- [能力声明](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/app-capability-declarations)
+- [上传包格式](https://learn.microsoft.com/en-us/windows/msix/package/packaging-uwp-apps)
