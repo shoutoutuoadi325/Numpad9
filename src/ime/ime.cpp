@@ -49,35 +49,57 @@ bool ReadCompartment(IUnknown* owner, REFGUID guid, LONG& value) {
     if (present) value = variant.lVal;
     VariantClear(&variant); return present;
 }
-bool UndeclaredScopeAllowed(ITfContext* context, ITfReadOnlyProperty* property, TfEditCookie cookie) {
-    // NULL scans all declared property ranges, rather than an empty selection.
-    // EnumRanges failures (including unsupported attribute transitions) do not
-    // prove absence. A declared or unreadable scope always stays fail-closed.
-    ComPtr<IEnumTfRanges> ranges;
-    if (property->EnumRanges(cookie, ranges.put(), nullptr) != S_OK || !ranges) return false;
-    ComPtr<ITfRange> declared;
-    ULONG fetched = 0;
-    if (ranges->Next(1, declared.put(), &fetched) != S_FALSE || fetched || declared) return false;
-    // Known classic controls can have no input-scope attribute at all. Never
-    // interpret a custom renderer's failed property read as a public field.
-    // Inspect only window metadata, without reading control/document text.
+HWND CurrentViewWindow(ITfContext* context) {
     ComPtr<ITfContextView> view;
     HWND window = nullptr;
     if (context->GetActiveView(view.put()) != S_OK || !view ||
-        view->GetWnd(&window) != S_OK || !window || !IsWindow(window) || GetFocus() != window) return false;
+        view->GetWnd(&window) != S_OK || !window || !IsWindow(window)) return nullptr;
+    return window;
+}
+bool IsClassicInputControl(HWND window) {
     wchar_t name[128]{};
-    if (!GetClassNameW(window, name, static_cast<int>(std::size(name)))) return false;
-    bool classic = false;
+    if (!window || !GetClassNameW(window, name, static_cast<int>(std::size(name)))) return false;
     for (const wchar_t* known : {L"EDIT", L"RICHEDIT50W", L"RichEdit20W", L"RichEdit20A"})
-        if (CompareStringOrdinal(name, -1, known, -1, TRUE) == CSTR_EQUAL) classic = true;
-    if (!classic) return false;
+        if (CompareStringOrdinal(name, -1, known, -1, TRUE) == CSTR_EQUAL) return true;
+    return false;
+}
+bool NativeInputStyleAllowed(HWND window) {
     SetLastError(ERROR_SUCCESS);
     const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
     if (!style && GetLastError() != ERROR_SUCCESS) return false;
     return (style & (ES_PASSWORD | ES_READONLY)) == 0;
 }
+bool NativeDefaultScopeAllowed(ITfContext* context, ITfReadOnlyProperty* property,
+                              TfEditCookie cookie, bool allowVirtualRange) {
+    // A compatibility rule for observed stock-control DEFAULT metadata only:
+    // never apply it to custom/web renderers, an unfocused window, or a native
+    // password/read-only control. No control/document text is inspected.
+    const HWND window = CurrentViewWindow(context);
+    if (!window || GetFocus() != window || !IsClassicInputControl(window) || !NativeInputStyleAllowed(window)) return false;
+    ComPtr<IEnumTfRanges> ranges;
+    if (property->EnumRanges(cookie, ranges.put(), nullptr) != S_OK || !ranges) return false;
+    ComPtr<ITfRange> declared;
+    ULONG fetched = 0;
+    const HRESULT first = ranges->Next(1, declared.put(), &fetched);
+    if (first == S_FALSE && !fetched && !declared) return true;
+    if (!allowVirtualRange || first != S_OK || fetched != 1 || !declared) return false;
+    // RichEdit exposes exactly one virtual attribute range when DEFAULT is
+    // undeclared. Both the selection and this range return E_FAIL/VT_EMPTY.
+    // Any declared value, extra range or different error rejects conversion.
+    VARIANT value; VariantInit(&value);
+    const HRESULT valueResult = property->GetValue(cookie, declared.get(), &value);
+    const bool nativeDefault = valueResult == E_FAIL && value.vt == VT_EMPTY;
+    VariantClear(&value);
+    if (!nativeDefault) return false;
+    fetched = 0;
+    return ranges->Next(1, declared.put(), &fetched) == S_FALSE && !fetched && !declared;
+}
 // Query only the current selection's input scope, never document contents.
 bool ScopeAllowed(ITfContext* context, TfEditCookie cookie) {
+    // Native password protection applies even if a host declares a permissive
+    // input scope. Other controls use their application-owned scope normally.
+    const HWND window = CurrentViewWindow(context);
+    if (IsClassicInputControl(window) && !NativeInputStyleAllowed(window)) return false;
     TF_SELECTION selection{}; ULONG fetched = 0;
     if (FAILED(context->GetSelection(cookie, TF_DEFAULT_SELECTION, 1, &selection, &fetched)) || fetched != 1 || !selection.range) return false;
     ComPtr<ITfRange> range; range.reset(selection.range);
@@ -89,10 +111,11 @@ bool ScopeAllowed(ITfContext* context, TfEditCookie cookie) {
     VARIANT variant; VariantInit(&variant);
     const HRESULT hr = property->GetValue(cookie, range.get(), &variant);
     bool allowed = hr == S_OK && variant.vt == VT_EMPTY;
-    // GetValue S_FALSE can also mean mixed coverage, not an unspecified scope.
-    // The known legacy E_FAIL/VT_EMPTY case needs independent absence evidence.
+    // S_FALSE may mean mixed coverage: only a genuinely empty enumeration can
+    // admit it. The bounded virtual-range exception is exclusive to the observed
+    // stock native DEFAULT E_FAIL/VT_EMPTY case.
     if ((hr == E_FAIL || hr == S_FALSE) && variant.vt == VT_EMPTY)
-        allowed = UndeclaredScopeAllowed(context, property.get(), cookie);
+        allowed = NativeDefaultScopeAllowed(context, property.get(), cookie, hr == E_FAIL);
     if (SUCCEEDED(hr) && variant.vt == VT_UNKNOWN && variant.punkVal) {
         ComPtr<ITfInputScope> scope;
         allowed = SUCCEEDED(variant.punkVal->QueryInterface(kIidInputScope, reinterpret_cast<void**>(scope.put())));
